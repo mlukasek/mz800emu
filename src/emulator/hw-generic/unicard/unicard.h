@@ -699,15 +699,35 @@ extern "C" {
     extern int unicard_mount_image_exists ( const char *card_path );
 
     /**
-     * @brief Zkopíruje soubor (COPY 9Ah, UC API rev 2); cíl přepíše.
+     * @brief Začne kopii souboru na pozadí (COPY 9Ah, UC API rev 2); cíl přepíše.
+     *
+     * Kopie pak běží po kusech přes unicard_copy_step() (repozitář ho volá při
+     * čtení stavu) a dá se zrušit unicard_copy_cancel(). Běží nejvýš jedna.
      *
      * @param src_path zdroj (kódová stránka karty)
      * @param dst_path cíl (kódová stránka karty)
-     * @return FR_OK; FR_NO_FILE zdroj není soubor; FR_NO_PATH cílový adresář
-     *         není; FR_DENIED cíl je adresář nebo totéž co zdroj;
+     * @return FR_OK kopie běží; FR_NO_FILE zdroj není soubor; FR_NO_PATH cílový
+     *         adresář není; FR_DENIED cíl je adresář nebo totéž co zdroj;
      *         FR_WRITE_PROTECTED (R/O SD); FR_DISK_ERR
      */
-    extern FRESULT unicard_copy ( const char *src_path, const char *dst_path );
+    extern FRESULT unicard_copy_start ( const char *src_path, const char *dst_path );
+
+    /**
+     * @brief Další kus kopie (nejvýš max bajtů).
+     *
+     * @return 1 kopie běží dál; 0 kopie skončila, *res = výsledek (při chybě je
+     *         nedokončený cíl smazaný)
+     */
+    extern int unicard_copy_step ( size_t max, FRESULT *res );
+
+    /** @brief Zruší běžící kopii a smaže nedokončený cíl. */
+    extern void unicard_copy_cancel ( void );
+
+    /** @brief Běží kopie na pozadí? */
+    extern int unicard_copy_active ( void );
+
+    /** @brief Průběh kopie v procentech (0-99). */
+    extern uint8_t unicard_copy_percent ( void );
 
     /**
      * @brief Záznamy sekce konfigurace karty (GETCONFIG 92h, UC API rev 2).

@@ -2677,7 +2677,64 @@ FRESULT unicard_config_set ( const char *section, const char *key, const char *v
 }
 
 
-FRESULT unicard_copy ( const char *src_path, const char *dst_path ) {
+/* COPY na pozadí (UC API rev 2): otevřené soubory a cesta cíle (při zrušení se smaže). */
+static struct {
+    FILE *in;
+    FILE *out;
+    char *dst;
+    guint64 size;
+    guint64 done;
+} s_copy;
+
+
+/* Konec kopie: zavře soubory, cíl při chybě nebo zrušení smaže. */
+static FRESULT unicard_copy_end ( FRESULT res ) {
+    if ( s_copy.in ) fclose ( s_copy.in );
+    if ( s_copy.out && ( fclose ( s_copy.out ) != 0 ) && ( res == FR_OK ) ) res = FR_DISK_ERR;
+    if ( ( res != FR_OK ) && s_copy.dst ) g_unlink ( s_copy.dst );
+    if ( s_copy.dst ) baseui_tools_mem_free ( s_copy.dst );
+    memset ( &s_copy, 0, sizeof ( s_copy ) );
+    return res;
+}
+
+
+int unicard_copy_active ( void ) {
+    return ( s_copy.in != NULL );
+}
+
+
+uint8_t unicard_copy_percent ( void ) {
+    if ( !s_copy.in || ( s_copy.size == 0 ) ) return 0;
+    guint64 p = s_copy.done * 100 / s_copy.size;
+    return ( p > 99 ) ? 99 : (uint8_t) p;
+}
+
+
+void unicard_copy_cancel ( void ) {
+    if ( s_copy.in ) unicard_copy_end ( FR_INT_ERR );
+}
+
+
+int unicard_copy_step ( size_t max, FRESULT *res ) {
+    static uint8_t buf[65536];
+    if ( !s_copy.in ) {
+        *res = FR_INT_ERR;
+        return 0;
+    };
+    size_t want = ( max < sizeof ( buf ) ) ? max : sizeof ( buf );
+    size_t n = fread ( buf, 1, want, s_copy.in );
+    FRESULT r = FR_OK;
+    if ( ( n > 0 ) && ( fwrite ( buf, 1, n, s_copy.out ) != n ) ) r = FR_DISK_ERR;
+    if ( ferror ( s_copy.in ) ) r = FR_DISK_ERR;
+    s_copy.done += n;
+    if ( ( r == FR_OK ) && ( n == want ) ) return 1;    /* (na přesném konci skončí příští krok) */
+    *res = unicard_copy_end ( r );
+    return 0;
+}
+
+
+FRESULT unicard_copy_start ( const char *src_path, const char *dst_path ) {
+    unicard_copy_cancel ( );
     if ( unicard_test_readonly ( ) ) {
         unicard_warn_readonly_blocked ( );
         return FR_WRITE_PROTECTED;
@@ -2698,24 +2755,21 @@ FRESULT unicard_copy ( const char *src_path, const char *dst_path ) {
     };
 
     if ( res == FR_OK ) {
-        /* Po blocích: obrazy disků mají i stovky MB. */
-        FILE *in = g_fopen ( src, "rb" );
-        FILE *out = in ? g_fopen ( dst, "wb" ) : NULL;
-        if ( !in || !out ) {
+        /* Po kusech na pozadí: obrazy disků mají i stovky MB (karta jinak drží Z80 ve WAIT). */
+        GStatBuf st;
+        s_copy.in = g_fopen ( src, "rb" );
+        s_copy.out = s_copy.in ? g_fopen ( dst, "wb" ) : NULL;
+        s_copy.size = ( g_stat ( src, &st ) == 0 ) ? (guint64) st.st_size : 0;
+        s_copy.done = 0;
+        if ( !s_copy.in || !s_copy.out ) {
+            if ( s_copy.in ) fclose ( s_copy.in );
+            if ( s_copy.out ) fclose ( s_copy.out );
+            memset ( &s_copy, 0, sizeof ( s_copy ) );
             res = FR_DISK_ERR;
         } else {
-            static uint8_t buf[65536];
-            size_t n;
-            while ( ( n = fread ( buf, 1, sizeof ( buf ), in ) ) > 0 ) {
-                if ( fwrite ( buf, 1, n, out ) != n ) {
-                    res = FR_DISK_ERR;
-                    break;
-                };
-            };
-            if ( ferror ( in ) ) res = FR_DISK_ERR;
+            s_copy.dst = dst;               /* cesta cíle zůstává pro zrušení */
+            dst = NULL;
         };
-        if ( in ) fclose ( in );
-        if ( out && ( fclose ( out ) != 0 ) ) res = FR_DISK_ERR;
     };
 
     if ( src ) baseui_tools_mem_free ( src );
