@@ -3007,6 +3007,78 @@ void test_unicard_rtc_invalid_rev2_error(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: MOUNTS 98h
+ * ================================================================ */
+
+/* Celý výstup MOUNTS (čte, dokud nezhasne DOUTRQ). */
+static size_t uc_read_mounts(char *out, size_t cap)
+{
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdMOUNTS);
+    size_t n = 0;
+    while ((n < cap - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) {
+        out[n++] = (char)uc_recv_data();
+    }
+    out[n] = '\0';
+    return n;
+}
+
+
+/* Bez konfigurace všech 8 jednotek prázdných; po MOUNT jejich cesty. */
+void test_unicard_mounts_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    char out[4096];
+    uc_read_mounts(out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("1:\r2:\r3:\r4:\rR:\rQ:\rE:\rS:\r", out, "všechny jednotky prázdné");
+
+    create_test_file("disk.dsk", 16);
+    uc_mount(1, "/disk.dsk");
+    uc_mount(5, "/qd.mzq");                         /* neexistuje: chyba, cfg se ale zapíše */
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    char *full = g_build_filename(s_test_sd_root, UNICARD_UNIMGR_DIR, "emm.cfg", NULL);
+    g_file_set_contents(full, "/emm.dat\r\n", -1, NULL);   /* ručně psaná, s koncem řádku */
+    g_free(full);
+    uc_read_mounts(out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("1:\r2:/disk.dsk\r3:\r4:\rR:\rQ:/qd.mzq\rE:/emm.dat\rS:\r", out,
+                                     "cesty z konfigurace jednotek");
+}
+
+
+/* Výstup delší než 255 B se přečte celý. */
+void test_unicard_mounts_long_output(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    char path[120];
+    memset(path, 'x', sizeof(path) - 1);
+    path[0] = '/';
+    path[sizeof(path) - 1] = '\0';
+    for (uint8_t d = 0; d < 8; d++) uc_mount(d, path);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    char out[4096];
+    size_t n = uc_read_mounts(out, sizeof(out));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(8 * (2 + strlen(path) + 1), n, "celý výstup (8 řádků)");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE('S', (uint8_t)out[n - 2 - strlen(path) - 1], "poslední řádek S:");
+}
+
+
+/* fw 0.26 MOUNTS nezná. */
+void test_unicard_mounts_absent_in_fw026(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdMOUNTS);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & (UNICARD_STS_ERROR | UNICARD_STS_DOUTRQ),
+                                    "fw 0.26: MOUNTS = ERROR");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3123,6 +3195,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_err_codes_fw026_zero);
     RUN_TEST(test_unicard_mount_eject_rev2_ok);
     RUN_TEST(test_unicard_rtc_invalid_rev2_error);
+
+    /* UC API rev 2: MOUNTS 98h. */
+    RUN_TEST(test_unicard_mounts_rev2);
+    RUN_TEST(test_unicard_mounts_long_output);
+    RUN_TEST(test_unicard_mounts_absent_in_fw026);
 
     int result = UNITY_END();
 

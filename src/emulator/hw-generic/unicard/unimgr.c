@@ -307,7 +307,7 @@ typedef struct st_UNIMGR {
     uint8_t err_code; // UC API rev 2: chybový kód (UC_ERR_*) poslední operace
 
     uint8_t *buf; // ukazatel I/O bufferu pro parametry a vystup z prikazu
-    uint8_t buf_count; // pocet zbyvajicich bajtu
+    uint16_t buf_count; // pocet zbyvajicich bajtu (MOUNTS má výstup přes 255 B)
     uint8_t buf_byte[PARAM_BUFFER_SIZE];
     const char *param_format; // odkaz na retezec s popisem vstupnich parametru 'B' - byte, 'S' - string (ukoncen znakem mensim jak 0x20)
 
@@ -740,7 +740,32 @@ static void do_cmdRTCSET ( void ) {
 
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
-#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK )
+#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS )
+
+/* Výstup MOUNTS: 8 řádků "j:" + cesta (nejvýš 255 B) + 0Dh. */
+static uint8_t s_mounts_out[8 * ( 2 + 255 + 1 )];
+
+/**
+ * cmdMOUNTS (UC API rev 2) - připojené obrazy všech jednotek.
+ *
+ * Řádek "jednotka:cesta" 0Dh pro jednotky 0-7 v pořadí 1 2 3 4 R Q E S
+ * (FDD 0-3 a QD jako MZPico, mk3b navíc RAM disk, EMM, SASI). Cesta je obsah
+ * konfigurace jednotky (z ní ji karta načetla), prázdná = jednotka prázdná.
+ * Výstup může být delší než 255 B.
+ */
+static void do_cmdMOUNTS ( void ) {
+    static const char unit[8] = { '1', '2', '3', '4', 'R', 'Q', 'E', 'S' };
+    size_t n = 0;
+    for ( uint8_t d = 0; d < 8; d++ ) {
+        char path[256];
+        if ( unicard_mount_cfg_get ( d, path, sizeof ( path ) ) < 0 ) path[0] = 0x00;
+        n += (size_t) snprintf ( (char*) &s_mounts_out[n], sizeof ( s_mounts_out ) - n, "%c:%s\r", unit[d], path );
+    };
+    g_unimgr.buf = s_mounts_out;
+    g_unimgr.buf_count = (uint16_t) n;
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
 
 /**
  * cmdINFO (UC API rev 2) - informace o kartě a rozšířeních.
@@ -1218,6 +1243,16 @@ static void unimgr_write_CMD ( uint8_t data ) {
             g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
+        case cmdMOUNTS:
+            if ( unicard_get_api_rev2 ( ) ) {
+                do_cmdMOUNTS ( );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+                g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
+            };
+            break;
+
         case cmdINFO:
             if ( unicard_get_api_rev2 ( ) ) {
                 do_cmdINFO ( );
@@ -1457,6 +1492,7 @@ static uint8_t unimgr_read_DATA ( void ) {
             case cmdGETFREE:
             case cmdSTAT:
             case cmdINFO:
+            case cmdMOUNTS:
                 ret = unimgr_output_data_bin ( );
                 break;
 
@@ -1549,7 +1585,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
                 /* fw 0.26: vždy 0. UC API rev 2: chybový kód podle MZPico. */
                 ret = unicard_get_api_rev2 ( ) ? unimgr_err_code ( ) : 0x00;
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
-                ret = g_unimgr.buf_count; // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti
+                // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti (MOUNTS může mít přes 255 B)
+                ret = ( g_unimgr.buf_count > 0xff ) ? 0xff : (uint8_t) g_unimgr.buf_count;
             } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) ) {
                 ret = g_unimgr.filebuf_count; // zbyvajici miste ve filebufferu
             };
