@@ -68,6 +68,7 @@ static CFGELM *g_elm_readonly;
 static CFGELM *g_elm_fw_version;
 static CFGELM *g_elm_runtime_check_on_connect;
 static CFGELM *g_elm_managed_fdc;
+static CFGELM *g_elm_api_rev2;
 
 /**
  * @brief Kořen SD karty převedený vůči cfg_dir (vrací ho
@@ -166,6 +167,17 @@ void unicard_set_sd_root_dirpath ( char *sd_root ) {
 
 en_UNICARD_FW unicard_get_fw ( void ) {
     return g_unicard.fw_emulated;
+}
+
+
+int unicard_get_api_rev2 ( void ) {
+    return ( g_unicard.api_rev2 && ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) ) ? 1 : 0;
+}
+
+
+void unicard_set_api_rev2 ( int on ) {
+    g_unicard.api_rev2 = on ? 1 : 0;
+    cfgelement_set_bool_value ( g_elm_api_rev2, g_unicard.api_rev2 );
 }
 
 
@@ -1079,6 +1091,10 @@ void unicard_init ( void ) {
      * FDC). Pole je int, UNSIGNED handler zapisuje 4 B (hodnoty 0..2). */
     g_elm_managed_fdc = cfgmodule_register_new_element ( cmod, "managed_fdc", CFGENTYPE_UNSIGNED, UNICARD_MANAGED_FDC_FDC0 );
     cfgelement_set_handlers ( g_elm_managed_fdc, (void*) &g_unicard.managed_fdc, (void*) &g_unicard.managed_fdc );
+
+    /* UC API rev 2 k uc3 (UC-UniMgr docs/api.md). Default 0 = fw 0.26. */
+    g_elm_api_rev2 = cfgmodule_register_new_element ( cmod, "api_rev2", CFGENTYPE_BOOL, 0 );
+    cfgelement_set_handlers ( g_elm_api_rev2, (void*) &g_unicard.api_rev2, (void*) &g_unicard.api_rev2 );
 
     cfgmodule_parse ( cmod );
     /* Propaguj hodnoty z INI do target proměnných (g_unicard.*).

@@ -121,6 +121,8 @@ void tearDown(void)
     unicard_set_connected(UNICARD_CONNECTION_DISCONNECTED);
     /* Hodiny karty zase podle hostitele (cmdRTCSETD/T v testech). */
     unicard_rtc_reset();
+    /* fw 0.26 (testy UC API rev 2 si ho zapínají samy). */
+    unicard_set_api_rev2(0);
 
     /* Smazat tmpdir rekurzivně. */
     if (s_test_sd_root) {
@@ -2821,6 +2823,67 @@ void test_unicard_rtc_invalid_ignored(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2 (uc3 + api_rev2): INFO 95h
+ * ================================================================ */
+
+/* fw 0.26 (bez api_rev2) INFO nezná: ERROR. */
+void test_unicard_info_absent_in_fw026(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINFO);
+    uint8_t sts = uc_master_status();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, sts & UNICARD_STS_ERROR, "fw 0.26: INFO = ERROR");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_DOUTRQ, "fw 0.26: INFO bez výstupu");
+}
+
+
+/* rev 2: INFO vrátí 16 B: revize 2, deska mk3b, příznaky UC v [8-9]. */
+void test_unicard_info_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINFO);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_DOUTRQ | UNICARD_STS_ERROR),
+                                    "rev 2: INFO = výstup bez chyby");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(16, uc_read_status_byte(2), "INFO má 16 B");
+    uint8_t info[16];
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    unicard_set_api_rev2(0);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, info[0], "revize rozšíření 2");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_INFO_BOARD_MK3B, info[1], "deska mk3b");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[3], "bez Wi-Fi a NET");
+    uint16_t flags = info[8] | (info[9] << 8);
+    TEST_ASSERT_EQUAL_HEX16_MESSAGE(UC_INFO_SEEK | UC_INFO_LFN, flags & (UC_INFO_SEEK | UC_INFO_LFN),
+                                     "příznaky SEEK a LFN");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_DOUTRQ, "po 16 B konec výstupu");
+}
+
+
+/* api_rev2 bez uc3 nic nedělá (uc1). Jen MZ-800. */
+void test_unicard_info_rev2_needs_uc3(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    if (g_mzarch_platform_numeric != 800) return;
+
+    unicard_set_api_rev2(1);
+    unicard_set_fw(UNICARD_FW_UC1);
+    int rev2 = unicard_get_api_rev2();
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINFO);
+    uint8_t sts = uc_master_status();
+    unicard_set_fw(UNICARD_FW_UC3);
+    unicard_set_api_rev2(0);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rev2, "uc1: rev 2 neplatí");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, sts & UNICARD_STS_ERROR, "uc1: INFO = ERROR");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2926,6 +2989,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_rtc_set_date);
     RUN_TEST(test_unicard_rtc_set_time);
     RUN_TEST(test_unicard_rtc_invalid_ignored);
+
+    /* UC API rev 2: INFO 95h. */
+    RUN_TEST(test_unicard_info_absent_in_fw026);
+    RUN_TEST(test_unicard_info_rev2);
+    RUN_TEST(test_unicard_info_rev2_needs_uc3);
 
     int result = UNITY_END();
 
