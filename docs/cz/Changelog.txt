@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - při chybě nese stav bajt 2 chybový kód jako v MZPico: 1 neznámý příkaz, 2 neplatný parametr, 3 přetečení bufferu parametrů, 4 není otevřený soubor (nebo není otevřený pro zápis), 6 chyba FatFS (FRESULT ve stavu bajt 3). Chybový kód i FRESULT popisují jen poslední operaci. Firmware 0.26 tam má dál 0 jako karta.
+
 	- Unicard - nová volba konfigurace api_rev2 (sekce [UNICARD] v ini, jen s firmwarem uc3): emuluje rozšíření UC API rev 2 karet Unicard mk3b a MZ-UniPi (specifikace v docs/api.md Unicard Manageru 3.0). Jako první příkaz INFO 95h (16 bajtů: revize rozšíření 2, deska, příznaky vlastností). Firmware 0.26 bez volby INFO nezná, stejně jako skutečná karta.
 
 	- Unicard uc3 - nastavení hodin karty (RTCSETD, RTCSETT) funguje. Emulované hodiny jdou dál jako místní čas hostitele plus nastavený rozdíl, dokud emulátor neskončí. Jako RTC karty berou roky 2000-2099. Firmware 0.26 hodnoty nekontroluje a vždy hlásí úspěch; emulace neplatné datum nebo čas nenastaví a hlásí také úspěch.

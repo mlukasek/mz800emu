@@ -442,6 +442,16 @@ extern "C" {
 
 #define UC_INFO_BOARD_MK3B  0x01    // INFO [1]: Unicard mk3b
 
+/* Chybový kód ve stavu bajt 2 při ERROR (UC API rev 2, podle MZPico).
+ * fw 0.26 tam má vždy 0. */
+#define UC_ERR_NONE             0   // neuvedeno
+#define UC_ERR_NOT_IMPLEMENTED  1   // neznámý příkaz
+#define UC_ERR_BAD_PARAM        2   // neplatný parametr
+#define UC_ERR_OVERFLOW         3   // přetečení bufferu parametrů
+#define UC_ERR_NO_FILE          4   // není otevřený soubor (nebo není pro zápis)
+#define UC_ERR_BUSY             5   // operace na pozadí, otevřený soubor
+#define UC_ERR_FATFS            6   // chyba FatFS, FRESULT ve stavu bajt 3
+
 
 // Interni prikazy - provadi se jinak, nez pres CMD port:
 

@@ -2884,6 +2884,84 @@ void test_unicard_info_rev2_needs_uc3(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: chybové kódy ve stavu bajt 2 (podle MZPico)
+ * ================================================================ */
+
+/* Stav bajt 0 (ERROR), 2 (kód) a 3 (FRESULT) poslední operace. */
+static void uc_err(uint8_t *err, uint8_t *code, uint8_t *fres)
+{
+    *err = uc_master_status() & UNICARD_STS_ERROR;
+    *code = uc_read_status_byte(2);
+    *fres = uc_read_status_byte(3);
+}
+
+
+/* rev 2: neznámý příkaz 1, bez souboru 4, chyba FatFS 6 s FRESULT, neplatná
+ * jednotka 2, přetečení parametrů 3; úspěch chybu smaže. */
+void test_unicard_err_codes_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t err, code, fres;
+    unicard_set_api_rev2(1);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(0x7f);                          /* neznámý příkaz */
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, err, "neznámý příkaz = ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_NOT_IMPLEMENTED, code, "neznámý příkaz = 1");
+
+    uc_send_cmd(cmdTELL);                       /* bez otevřeného souboru */
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_NO_FILE, code, "TELL bez souboru = 4");
+
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/nothing.bin");
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_FATFS, code, "OPEN neexistujícího = 6");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_NO_FILE, fres, "FRESULT NO_FILE");
+
+    uc_mount(9, "/x.dsk");
+    uc_err(&err, &code, &fres);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, code, "MOUNT jednotky 9 = 2");
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCHDIR);
+    /* buffer 255 B, 1 B na terminátor řetězce: 254. znak ho přeplní (další
+     * bajty by už šly jako zápis do souboru) */
+    for (int i = 0; i < 254; i++) uc_send_data('a');
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, err, "přetečení = ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_OVERFLOW, code, "přetečení = 3");
+
+    uc_send_cmd(cmdRESET);
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, err, "úspěch chybu smaže");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_OK, fres, "rev 2: FRESULT jen poslední operace");
+}
+
+
+/* fw 0.26: při chybě je kód vždy 0. */
+void test_unicard_err_codes_fw026_zero(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t err, code, fres;
+    unicard_set_api_rev2(0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/nothing.bin");
+    uc_err(&err, &code, &fres);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, err, "OPEN neexistujícího = ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, code, "fw 0.26: kód 0");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_NO_FILE, fres, "FRESULT NO_FILE");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2994,6 +3072,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_info_absent_in_fw026);
     RUN_TEST(test_unicard_info_rev2);
     RUN_TEST(test_unicard_info_rev2_needs_uc3);
+
+    /* UC API rev 2: chybové kódy. */
+    RUN_TEST(test_unicard_err_codes_rev2);
+    RUN_TEST(test_unicard_err_codes_fw026_zero);
 
     int result = UNITY_END();
 
