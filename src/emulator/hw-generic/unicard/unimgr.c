@@ -740,7 +740,35 @@ static void do_cmdRTCSET ( void ) {
 
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
-#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS )
+#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY )
+
+/**
+ * cmdCOPY (UC API rev 2) - zkopíruje soubor, cíl přepíše.
+ *
+ * Vstup SS: zdroj, cíl. Chyby: 2 prázdná cesta, 5 otevřený soubor (karta
+ * pro kopii používá stejný FIL), 6 FatFS (zdroj není, cíl je adresář...).
+ */
+static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        g_unimgr.param_format = "SS";
+        unimgr_input_params ( cmd_phase, 0 );
+        return;
+    };
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    char *src = (char*) g_unimgr.buf_byte;
+    char *dst = src + strlen ( src ) + 1;
+    if ( ( src[0] == 0x00 ) || ( dst[0] == 0x00 ) ) {
+        g_unimgr.err_code = UC_ERR_BAD_PARAM;
+        return;
+    };
+    if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) {
+        g_unimgr.err_code = UC_ERR_BUSY;
+        return;
+    };
+    g_unimgr.ff_res = unicard_copy ( src, dst );
+    if ( FR_OK != g_unimgr.ff_res ) return;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
 
 /* Výstup MOUNTS: 8 řádků "j:" + cesta (nejvýš 255 B) + 0Dh. */
 static uint8_t s_mounts_out[8 * ( 2 + 255 + 1 )];
@@ -1243,6 +1271,16 @@ static void unimgr_write_CMD ( uint8_t data ) {
             g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
+        case cmdCOPY:
+            if ( unicard_get_api_rev2 ( ) ) {
+                do_cmdCOPY ( UNIMGR_CMDSTATE_START );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+                g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
+            };
+            break;
+
         case cmdMOUNTS:
             if ( unicard_get_api_rev2 ( ) ) {
                 do_cmdMOUNTS ( );
@@ -1378,6 +1416,10 @@ static void unimgr_write_param ( uint8_t data ) {
         case cmdRTCSETD:
         case cmdRTCSETT:
             do_cmdRTCSET ( );
+            break;
+
+        case cmdCOPY:
+            do_cmdCOPY ( UNIMGR_CMDSTATE_PARAMOK );
             break;
 
         default:
