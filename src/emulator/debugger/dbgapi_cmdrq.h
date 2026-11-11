@@ -3789,6 +3789,12 @@ typedef struct st_DBGAPI_PERIPH_GDG_PARAM
     uint8_t  _pad[2];            /**< Zarovnání. */
     uint32_t tempo;              /**< OUT: tempo počítadlo (společné). */
     uint32_t tempo_divider;      /**< OUT: tempo_divider (společné). */
+    uint16_t hws_ssa;            /**< OUT: HW scroll SSA, hodnota registru (5 = 8 rastrů); jen MZ-800. */
+    uint16_t hws_sea;            /**< OUT: HW scroll SEA, hodnota registru; jen MZ-800. */
+    uint16_t hws_sw;             /**< OUT: HW scroll SW, hodnota registru; jen MZ-800. */
+    uint16_t hws_sof;            /**< OUT: HW scroll SOF, 10 bitů (5 = 1 rastr); jen MZ-800. */
+    uint8_t  hws_enabled;        /**< OUT: 1 = scroll je aktivní (všechny podmínky registrů splněné). */
+    uint8_t  _pad2[3];           /**< Zarovnání. */
 } st_DBGAPI_PERIPH_GDG_PARAM;
 
 

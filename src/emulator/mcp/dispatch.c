@@ -12114,7 +12114,8 @@ static en_MCP_DISPATCH_RESULT _handle_get_periph_beeper(
  *    "regDMD": int, "regBOR": int, "regPALGRP": int, "regct53g7": int,
  *    "beam_row": int, "total_screens": int, "total_ticks": int,
  *    "sts_vsync": int, "sts_hsync": int, "hbln": int, "vbln": int,
- *    "cksw": int, "tempo": int, "tempo_divider": int}
+ *    "cksw": int, "tempo": int, "tempo_divider": int,
+ *    "hwscroll": {"ssa", "sea", "sw", "sof": int, "enabled": bool} (jen MZ-800)}
  */
 static en_MCP_DISPATCH_RESULT _handle_get_periph_gdg(
     const st_JSONL_MESSAGE *req, char **out_response) {
@@ -12150,6 +12151,16 @@ static en_MCP_DISPATCH_RESULT _handle_get_periph_gdg(
     json_object_set_int_member(resp,    "cksw",         (gint64)param.cksw);
     json_object_set_int_member(resp,    "tempo",        (gint64)param.tempo);
     json_object_set_int_member(resp,    "tempo_divider", (gint64)param.tempo_divider);
+    /* HW scroll (jen MZ-800): hodnoty registrů SSA, SEA, SW, SOF a zda je aktivní. */
+    if (param.has_border_reg) {
+        JsonObject *hws = json_object_new();
+        json_object_set_int_member(hws, "ssa", (gint64)param.hws_ssa);
+        json_object_set_int_member(hws, "sea", (gint64)param.hws_sea);
+        json_object_set_int_member(hws, "sw",  (gint64)param.hws_sw);
+        json_object_set_int_member(hws, "sof", (gint64)param.hws_sof);
+        json_object_set_boolean_member(hws, "enabled", param.hws_enabled ? TRUE : FALSE);
+        json_object_set_object_member(resp, "hwscroll", hws);
+    }
     /* Paleta array, jen palette_count platných entries. */
     JsonArray *pal_arr = json_array_new();
     unsigned pn = param.palette_count;

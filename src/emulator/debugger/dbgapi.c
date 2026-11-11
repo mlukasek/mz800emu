@@ -76,6 +76,7 @@
 #include "memory/memory.h"
 #if MZARCH == 800
 #include "mzarch/mz800/gdg/mz800_gdg.h"
+#include "mzarch/mz800/gdg/mz800_hwscroll.h"
 #elif MZARCH == 1500
 #include "mzarch/mz1500/gdg/mz1500_gdg.h"
 #elif MZARCH == 700
@@ -6169,6 +6170,14 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             p->palette[ 3 ] = (uint8_t)( g_gdg.regPAL3 & 0xFFu );
             /* entries 4..15 zůstávají 0 (placeholder; klient si dopočítá
              * podle regPAL0..3 + regPALGRP - viz hw/09-video-mz800-modes.md). */
+            /* HW scroll: hodnoty registrů tak, jak je zapsal program
+             * (SSA/SEA/SW po 5 = 8 rastrů, SOF po 5 = 1 rastr). Převod
+             * adres VRAM (displej i CPU) dělá hwscroll_shift_addr(). */
+            p->hws_ssa     = (uint16_t)( g_hwscroll.regSSA >> 6 );
+            p->hws_sea     = (uint16_t)( g_hwscroll.regSEA >> 6 );
+            p->hws_sw      = (uint16_t)( g_hwscroll.regSW >> 6 );
+            p->hws_sof     = (uint16_t)( g_hwscroll.regSOF >> 3 );
+            p->hws_enabled = (uint8_t)( g_hwscroll.enabled ? 1 : 0 );
             memcpy ( p->platform, "mz800", 6 );
 #elif MZARCH == 1500
             /* MZ-1500: 8-entry palette `mode1500_color[8]`, žádný regBOR
