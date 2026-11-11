@@ -2577,12 +2577,36 @@ void unicard_fdc_mount ( uint8_t drive_id, char *filepath ) {
 }
 
 
-FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path ) {
-    /* Jména jako do_cmdMOUNT ve firmwaru mk3b. */
-    static const char *cfg_name[8] = {
-        "fd0.cfg", "fd1.cfg", "fd2.cfg", "fd3.cfg",
-        "ramdisc.cfg", "qd.cfg", "emm.cfg", "sasi.cfg"
+/* Konfigurace jednotek 0-7, jména jako do_cmdMOUNT ve firmwaru mk3b. */
+static const char *s_mount_cfg_name[8] = {
+    "fd0.cfg", "fd1.cfg", "fd2.cfg", "fd3.cfg",
+    "ramdisc.cfg", "qd.cfg", "emm.cfg", "sasi.cfg"
+};
+
+
+int unicard_mount_cfg_get ( uint8_t dev_id, char *out, size_t size ) {
+    out[0] = 0x00;
+    if ( dev_id > 7 ) return -1;
+    char *cfg = g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, s_mount_cfg_name[dev_id], NULL );
+    char *data = NULL;
+    gsize len = 0;
+    int ret = -1;
+    if ( g_file_get_contents ( cfg, &data, &len, NULL ) ) {
+        /* Konec řádku z ručně psané konfigurace pryč. */
+        while ( ( len > 0 ) && ( (unsigned char) data[len - 1] < 0x20 ) ) len--;
+        if ( len + 1 > size ) len = size - 1;
+        memcpy ( out, data, len );
+        out[len] = 0x00;
+        ret = (int) len;
+        g_free ( data );
     };
+    g_free ( cfg );
+    return ret;
+}
+
+
+FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path ) {
+    const char **cfg_name = s_mount_cfg_name;
     if ( dev_id > 7 ) return FR_INVALID_PARAMETER;
     if ( unicard_test_readonly ( ) ) {
         unicard_warn_readonly_blocked ( );

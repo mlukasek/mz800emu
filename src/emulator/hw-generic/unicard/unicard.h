@@ -710,6 +710,17 @@ extern "C" {
     extern FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path );
 
     /**
+     * @brief Cesta z konfigurace jednotky (to, z čeho ji karta načetla).
+     *
+     * @param dev_id jednotka 0-7
+     * @param out výstup (NUL-terminovaný, bez konce řádku, kódová stránka
+     *        karty); prázdný když konfigurace není
+     * @param size velikost výstupu
+     * @return délka, nebo -1 když konfigurace není
+     */
+    extern int unicard_mount_cfg_get ( uint8_t dev_id, char *out, size_t size );
+
+    /**
      * @brief Existuje obraz jednotky? Cestu bere jako firmware při načtení
      *        konfigurace: relativní je od kořene SD, ne od CWD.
      *

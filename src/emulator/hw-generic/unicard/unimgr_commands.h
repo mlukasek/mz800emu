@@ -430,6 +430,7 @@ extern "C" {
 /* UC API rev 2 (uc3 + volba api_rev2), kódy podle MZPico, specifikace
  * UC-UniMgr docs/api.md. */
 #define cmdINFO         0x95    // 16 B: [0] revize 2, [1] deska, [3] příznaky MZPico, [8-9] příznaky UC
+#define cmdMOUNTS       0x98    // text: "j:cesta" 0Dh pro jednotky 1 2 3 4 R Q E S (0-7)
 
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
