@@ -735,7 +735,7 @@ static void do_cmdRTCSET ( void ) {
 
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
-#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN )
+#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK )
 
 /**
  * cmdINFO (UC API rev 2) - informace o kartě a rozšířeních.
@@ -894,11 +894,18 @@ static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
         return;
     };
     g_unimgr.ff_res = unicard_mount_cfg_set ( dev_id, path );
+    /* UC API rev 2: vysunutí prázdné jednotky (konfigurace není) je OK. */
+    if ( ( path[0] == 0x00 ) && ( g_unimgr.ff_res == FR_NO_FILE ) && unicard_get_api_rev2 ( ) ) {
+        g_unimgr.ff_res = FR_OK;
+    };
     if ( FR_OK != g_unimgr.ff_res ) return; /* sts_err zůstává ERROR */
 
     if ( path[0] == 0x00 ) {
         if ( dev_id <= 3 ) unicard_fdc_mount ( dev_id, path );
-        return; /* fw 0.26: načtení bez konfigurace = chyba */
+        /* fw 0.26: načtení bez konfigurace = chyba (disk je přesto venku).
+         * UC API rev 2: vysunutí hlásí OK. */
+        if ( unicard_get_api_rev2 ( ) ) g_unimgr.sts_err = UNIMGR_STS_OK;
+        return;
     };
 
     int exists = unicard_mount_image_exists ( path );
