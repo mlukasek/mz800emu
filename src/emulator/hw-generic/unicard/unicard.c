@@ -143,6 +143,9 @@ static int g_unicard_ro_warned = 0;
 /* Forward declarations interních helperů. */
 static char* unicard_normalize_emu_path ( const char *emu_path, int *escape_detected );
 static void unicard_time_to_fat ( time_t t, uint16_t *fdate, uint16_t *ftime );
+static void unicard_compute_sfn_in_dir ( const char *dir_full, const char *basename,
+                                         en_UNICARD_SFN_STYLE style, char out[13],
+                                         gboolean *out_has_lfn );
 
 
 char* unicard_get_sd_root_dirpath ( void ) {
@@ -224,6 +227,125 @@ static int unicard_name_to_card ( const char *utf8, char *out, size_t size ) {
     memcpy ( out, c, len + 1 );
     g_free ( c );
     return (int) len;
+}
+
+
+/**
+ * @brief Cesta (hostitelská, UTF-8, "/a/b") -> kódová stránka karty.
+ *
+ * Komponentu, kterou karta pod dlouhým jménem neukáže (unicard_name_to_card
+ * selže), nahradí 8.3 aliasem jako FatFS (jen uc3; uc1 ji nechá).
+ *
+ * @return délka výsledku, nebo -1 když se nevejde do @p size
+ */
+static int unicard_path_to_card ( const char *naked, char *out, size_t size ) {
+    GString *res = g_string_new ( "" );
+    GString *host = g_string_new ( "" );
+    gchar **comp = g_strsplit ( naked, "/", -1 );
+    for ( int i = 0; comp[i]; i++ ) {
+        if ( comp[i][0] == 0x00 ) continue;
+        char cname[_MAX_LFN];
+        if ( unicard_name_to_card ( comp[i], cname, sizeof ( cname ) ) < 0 ) {
+            if ( unicard_names_cp852 ( ) ) {
+                char *dir_full = g_build_filename ( unicard_get_sd_root_dirpath ( ), host->str, NULL );
+                unicard_compute_sfn_in_dir ( dir_full, comp[i], UNICARD_SFN_STYLE_UC3, cname, NULL );
+                g_free ( dir_full );
+            } else {
+                g_strlcpy ( cname, comp[i], sizeof ( cname ) );
+            };
+        };
+        g_string_append_c ( res, '/' );
+        g_string_append ( res, cname );
+        g_string_append_c ( host, '/' );
+        g_string_append ( host, comp[i] );
+    };
+    g_strfreev ( comp );
+    if ( res->len == 0 ) g_string_append_c ( res, '/' );
+    int len = -1;
+    if ( res->len + 1 <= size ) {
+        memcpy ( out, res->str, res->len + 1 );
+        len = (int) res->len;
+    };
+    g_string_free ( res, TRUE );
+    g_string_free ( host, TRUE );
+    return len;
+}
+
+
+/**
+ * @brief Najde v hostitelském adresáři položku podle jejího 8.3 aliasu.
+ *
+ * FatFS najde soubor i podle krátkého jména. Jména, která karta pod dlouhým
+ * jménem neukáže (delší než 31 znaků v CP852, znak mimo CP852), jsou pro
+ * klienta dostupná jen tak. Alias se počítá stejně jako ve výpisu adresáře
+ * (unicard_sfn_make v pořadí hostitelského adresáře).
+ *
+ * @param dir_full hostitelská cesta k adresáři
+ * @param name hledané jméno (UTF-8)
+ * @return nově alokované hostitelské jméno (g_free), nebo NULL
+ */
+static char* unicard_find_by_alias ( const char *dir_full, const char *name ) {
+    if ( strlen ( name ) > 12 ) return NULL; /* 8.3 má nejvýš 12 znaků */
+    char *found = NULL;
+    st_UNICARD_SFN_CTX ctx;
+    unicard_sfn_ctx_init ( &ctx );
+    GDir *dh = g_dir_open ( dir_full, 0, NULL );
+    if ( dh != NULL ) {
+        const gchar *e;
+        while ( ( e = g_dir_read_name ( dh ) ) != NULL ) {
+            char alias[13];
+            unicard_sfn_make ( e, UNICARD_SFN_STYLE_UC3, &ctx, alias, NULL );
+            if ( alias[0] && ( 0 == g_ascii_strcasecmp ( alias, name ) ) ) {
+                found = g_strdup ( e );
+                break;
+            };
+        };
+        g_dir_close ( dh );
+    };
+    unicard_sfn_ctx_clear ( &ctx );
+    return found;
+}
+
+
+/**
+ * @brief Komponenty cesty, které na hostiteli nejsou, zkusí najít jako 8.3
+ *        alias (jen uc3).
+ *
+ * @param naked normalizovaná cesta ("/a/b", baseui_tools_mem_alloc); když se
+ *        něco nahradí, uvolní se a nahradí novou
+ */
+static void unicard_resolve_aliases ( char **naked ) {
+    if ( !unicard_names_cp852 ( ) ) return;
+    if ( ( *naked )[0] == 0x00 || 0 == strcmp ( *naked, "/" ) ) return;
+
+    const char *root = unicard_get_sd_root_dirpath ( );
+    gchar **comp = g_strsplit ( *naked, "/", -1 );
+    GString *res = g_string_new ( "" );
+    gboolean changed = FALSE;
+    for ( int i = 0; comp[i]; i++ ) {
+        if ( comp[i][0] == 0x00 ) continue;
+        char *dir_full = g_build_filename ( root, res->str, NULL );
+        char *full = g_build_filename ( dir_full, comp[i], NULL );
+        if ( !g_file_test ( full, G_FILE_TEST_EXISTS ) ) {
+            char *host = unicard_find_by_alias ( dir_full, comp[i] );
+            if ( host ) {
+                g_free ( comp[i] );
+                comp[i] = host;
+                changed = TRUE;
+            };
+        };
+        g_free ( full );
+        g_free ( dir_full );
+        g_string_append_c ( res, '/' );
+        g_string_append ( res, comp[i] );
+    };
+    g_strfreev ( comp );
+    if ( changed ) {
+        baseui_tools_mem_free ( *naked );
+        *naked = (char*) baseui_tools_mem_alloc0 ( res->len + 1 );
+        memcpy ( *naked, res->str, res->len + 1 );
+    };
+    g_string_free ( res, TRUE );
 }
 
 
@@ -1185,6 +1307,8 @@ char* unicard_jail_resolve_with_naked ( const char *emu_path, char **naked_out )
     char *emu_path_utf8 = unicard_name_from_card ( emu_path );
     char *naked = unicard_normalize_emu_path ( emu_path_utf8, &escape );
     g_free ( emu_path_utf8 );
+    /* Komponenty zadané 8.3 aliasem -> hostitelská jména (uc3). */
+    if ( !escape ) unicard_resolve_aliases ( &naked );
 
     if ( escape ) {
         g_warning ( "Unicard SD jail violation: emu tried to access '%s' (escapes SD root '%s')",
@@ -1297,8 +1421,9 @@ int unicard_get_cwd ( FRESULT *ff_res, char *buff, int buff_size ) {
     // *ff_res = f_getcwd ( (char*) buff_local, buff_size );
     *ff_res = FR_OK;
     /* work_dir je hostitelská (UTF-8) cesta, klient ji dostane v kódové
-     * stránce karty. */
-    if ( unicard_name_to_card ( g_unicard.work_dir, buff, buff_size ) >= 0 ) return EXIT_SUCCESS;
+     * stránce karty (komponenty, které se nevejdou, jako 8.3 alias). */
+    if ( unicard_names_cp852 ( ) &&
+         ( unicard_path_to_card ( g_unicard.work_dir, buff, buff_size ) >= 0 ) ) return EXIT_SUCCESS;
     int len = strlen ( g_unicard.work_dir );
     if ( len < buff_size ) {
         memcpy ( buff, g_unicard.work_dir, len + 1 );
@@ -1423,6 +1548,26 @@ FRESULT unicard_dir_open ( st_UNICARD_DIR *dir, char *dirpath ) {
 }
 
 
+/**
+ * @brief Jméno položky adresáře pro klienta (FILELIST).
+ *
+ * V kódové stránce karty; když se tak nevejde (delší než 31 znaků, znak mimo
+ * CP852), uc3 pošle 8.3 alias jako FatFS s FF_MAX_LFN 32 (dlouhé jméno
+ * zahodí). Každé jméno se zaregistruje do kolizního kontextu adresáře, aby
+ * čísla ~N odpovídala READDIR a STAT.
+ *
+ * @return 0, nebo -1 když položku klient neuvidí (uc1: jméno se nevejde)
+ */
+static int unicard_dir_entry_card_name ( st_UNICARD_DIR *dir, const char *name, char out[_MAX_LFN] ) {
+    char alias[13];
+    unicard_sfn_make ( name, UNICARD_SFN_STYLE_UC3, &dir->sfn_ctx, alias, NULL );
+    if ( unicard_name_to_card ( name, out, _MAX_LFN ) >= 0 ) return 0;
+    if ( !unicard_names_cp852 ( ) || ( alias[0] == 0x00 ) ) return -1;
+    g_strlcpy ( out, alias, _MAX_LFN );
+    return 0;
+}
+
+
 FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_size ) {
 
     if ( dir->dh == NULL ) return FR_DISK_ERR;
@@ -1455,7 +1600,7 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
 
     if ( ( dir->position == 0 ) && ( dir->forced_first_dir != NULL ) ) {
         dir->position++;
-        if ( unicard_name_to_card ( dir->forced_first_dir, cname, sizeof ( cname ) ) < 0 ) {
+        if ( unicard_dir_entry_card_name ( dir, dir->forced_first_dir, cname ) < 0 ) {
             g_strlcpy ( cname, dir->forced_first_dir, sizeof ( cname ) );
         };
         snprintf ( buff, buff_size, "%s/%c0%c", cname, 0x0d, 0x0d );
@@ -1472,20 +1617,20 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
             return FR_OK;
         };
 
-        /* Délka se počítá v kódové stránce karty (CP852 1 bajt na znak),
-         * ne v bajtech UTF-8. */
-        if ( unicard_name_to_card ( filename, cname, sizeof ( cname ) ) < 0 ) {
-            fprintf ( stderr, "%s():%d - Filename is too long or not in the card's code page '%s'\n",
-                      __func__, __LINE__, filename );
-            continue;
-        };
-
         /* Pokud byl forced_first_dir už emitnut (workaround výše), skip
          * ho v normálním gdir read aby se nezopakoval. */
         if ( ( dir->forced_first_dir != NULL ) &&
              ( 0 == strcmp ( filename, dir->forced_first_dir ) ) ) {
             continue;
         }
+
+        /* Délka se počítá v kódové stránce karty (CP852 1 bajt na znak),
+         * ne v bajtech UTF-8. Co se nevejde, ukáže uc3 jako 8.3 alias. */
+        if ( unicard_dir_entry_card_name ( dir, filename, cname ) < 0 ) {
+            fprintf ( stderr, "%s():%d - Filename is too long or not in the card's code page '%s'\n",
+                      __func__, __LINE__, filename );
+            continue;
+        };
 
         break;
     } while ( 1 );
@@ -1546,8 +1691,14 @@ static void unicard_fill_lfname ( st_UNICARD_FILINFO *finfo, const char *name,
     if ( fill ) {
         /* Jméno v kódové stránce karty (uc3: CP852). */
         int clen = unicard_name_to_card ( name, finfo->lfname, _MAX_LFN );
-        if ( clen < 0 ) {
-            /* Nevejde se nebo má znak mimo kódovou stránku: zkrácené jako dřív. */
+        if ( ( clen < 0 ) && unicard_names_cp852 ( ) && finfo->fname[0] ) {
+            /* Nevejde se nebo má znak mimo CP852: FatFS (FF_MAX_LFN 32)
+             * dlouhé jméno zahodí a do fname dá 8.3 alias. fname
+             * (offset 9) je v tu chvíli už vyplněný. */
+            g_strlcpy ( finfo->lfname, finfo->fname, _MAX_LFN );
+            clen = (int) strlen ( finfo->lfname );
+        } else if ( clen < 0 ) {
+            /* uc1: zkrácené jako dřív. */
             size_t len = strlen ( name );
             size_t lfn_copy = len < ( _MAX_LFN - 1 ) ? len : ( _MAX_LFN - 1 );
             memcpy ( finfo->lfname, name, lfn_copy );
@@ -1616,10 +1767,10 @@ FRESULT unicard_dir_read_filinfo ( st_UNICARD_DIR *dir, st_UNICARD_FILINFO *finf
             *eof = 1;
             return FR_OK;
         };
+        /* uc3 ho ukáže jako 8.3 alias (unicard_fill_lfname), uc1 přeskočí. */
         char cname[_MAX_LFN];
-        if ( unicard_name_to_card ( filename, cname, sizeof ( cname ) ) < 0 ) {
-            fprintf ( stderr, "%s():%d - Filename too long or not in the card's code page, skip '%s'\n",
-                      __func__, __LINE__, filename );
+        if ( ( unicard_name_to_card ( filename, cname, sizeof ( cname ) ) < 0 ) && !unicard_names_cp852 ( ) ) {
+            fprintf ( stderr, "%s():%d - Filename too long, skip '%s'\n", __func__, __LINE__, filename );
             continue;
         };
         if ( ( dir->forced_first_dir != NULL ) &&
