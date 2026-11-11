@@ -2309,6 +2309,157 @@ void test_unicard_cmdREADDIR_uc1_dotdot(void)
  * MAIN
  * ================================================================ */
 
+/* ================================================================
+ * Jména v kódové stránce karty (uc3: CP852, FatFS FF_CODE_PAGE 852)
+ * ================================================================ */
+
+/* Totéž jméno v UTF-8 (hostitel) a v CP852 (port karty). */
+#define CP852_FILE_UTF8 "\xC4" "\x8D" "ten\xC3" "\xAD" ".txt"          /* čtení.txt */
+#define CP852_FILE_CARD "\x9F" "ten\xA1" ".txt"
+#define CP852_DIR_UTF8  "slo\xC5" "\xBE" "ka"                            /* složka */
+#define CP852_DIR_CARD  "slo\xA7" "ka"
+/* "Žluťoučký kůň úpěl ďábelské.txt": 31 znaků, v UTF-8 42 bajtů */
+#define CP852_LONG_UTF8 "\xC5" "\xBD" "lu\xC5" "\xA5" "ou\xC4" "\x8D" "k\xC3" "\xBD" " k\xC5" "\xAF" "\xC5" \
+                        "\x88" " \xC3" "\xBA" "p\xC4" "\x9B" "l \xC4" "\x8F" "\xC3" "\xA1" "belsk\xC3" "\xA9" ".txt"
+#define CP852_LONG_CARD "\xA6" "lu\x9C" "ou\x9F" "k\xEC" " k\x85" "\xE5" " \xA3" "p\xD8" "l \xD4" "\xA0" \
+                        "belsk\x82" ".txt"
+/* "Žluťoučký kůň úpěl ďábelské ódy.txt": 35 znaků, víc než FF_MAX_LFN */
+#define CP852_TOOLONG_CARD "\xA6" "lu\x9C" "ou\x9F" "k\xEC" " k\x85" "\xE5" " \xA3" "p\xD8" "l \xD4" "\xA0" \
+                           "belsk\x82" " \xA2" "dy.txt"
+#define CP852_TOOLONG_UTF8 "\xC5" "\xBD" "lu\xC5" "\xA5" "ou\xC4" "\x8D" "k\xC3" "\xBD" " k\xC5" "\xAF" \
+                           "\xC5" "\x88" " \xC3" "\xBA" "p\xC4" "\x9B" "l \xC4" "\x8F" "\xC3" "\xA1" "belsk\xC3" \
+                           "\xA9" " \xC3" "\xB3" "dy.txt"
+
+/* Helper: celý výstup cmdFILELIST adresáře @p path ("jméno\r velikost\r"
+ * za sebou, bajty tak, jak přišly portem). */
+static size_t uc_read_filelist(const char *path, char *out, size_t cap)
+{
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str(path);
+    size_t n = 0;
+    while ((n < cap - 1) && (uc_master_status() & UNICARD_STS_READDIR)) {
+        out[n++] = (char)uc_recv_data();
+    }
+    out[n] = '\0';
+    return n;
+}
+
+
+/* uc3: FILELIST posílá jména v CP852, ne v UTF-8 hostitele. */
+void test_unicard_cp852_filelist(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(CP852_FILE_UTF8, 3);
+    char out[2048];
+    uc_read_filelist("/", out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, CP852_FILE_CARD "\r3\r"),
+                                 "FILELIST musí poslat jméno v CP852");
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, CP852_FILE_UTF8), "FILELIST nesmí poslat UTF-8");
+}
+
+
+/* uc3: cesta v CP852 otevře hostitelský soubor s UTF-8 jménem. */
+void test_unicard_cp852_open(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(CP852_FILE_UTF8, 5);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/" CP852_FILE_CARD);
+    uint8_t sts = uc_master_status();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR, "OPEN cesty v CP852 nesmí ERROR");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READ, sts & UNICARD_STS_READ, "Soubor musí být otevřený");
+    for (int i = 0; i < 5; i++) {
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE((uint8_t)i, uc_recv_data(), "Obsah souboru");
+    }
+    uc_close();
+}
+
+
+/* uc3: STAT vrátí dlouhé jméno v CP852 a jeho délku v bajtech CP852. */
+void test_unicard_cp852_stat(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(CP852_LONG_UTF8, 1);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdSTAT);
+    uc_send_str("/" CP852_LONG_CARD);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "STAT nesmí ERROR");
+    for (int i = 0; i < 9 + 13; i++) (void)uc_recv_data();  /* fsize..fattrib, fname[13] */
+    uint8_t lfn_strlen = uc_recv_data();
+    char lfn[_MAX_LFN + 1];
+    for (int i = 0; i < _MAX_LFN; i++) lfn[i] = (char)uc_recv_data();
+    lfn[_MAX_LFN] = '\0';
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(31, lfn_strlen, "Délka jména v bajtech CP852");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(CP852_LONG_CARD, lfn, "Dlouhé jméno v CP852");
+}
+
+
+/* uc3: jméno s 31 znaky (v UTF-8 42 bajtů) se vejde (FF_MAX_LFN 32 v CP852),
+ * jméno s 35 znaky ne. */
+void test_unicard_cp852_length_in_card_cp(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(CP852_LONG_UTF8, 1);
+    create_test_file(CP852_TOOLONG_UTF8, 1);
+    char out[2048];
+    uc_read_filelist("/", out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, CP852_LONG_CARD "\r1\r"), "Jméno s 31 znaky musí být ve výpisu");
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, CP852_TOOLONG_CARD), "Jméno s 35 znaky se pod dlouhým jménem nevejde");
+
+    int found = 0;
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdREADDIR);
+    uc_send_str("/");
+    for (int iter = 0; iter < 100; iter++) {
+        uint32_t fsize;
+        uint8_t fattrib;
+        char name[_MAX_LFN + 1];
+        if (!uc_read_dir_filinfo(&fsize, &fattrib, name, sizeof(name))) break;
+        if (0 == strcmp(name, CP852_LONG_CARD)) found = 1;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, "READDIR musí vrátit jméno s 31 znaky v CP852");
+}
+
+
+/* uc3: CHDIR do adresáře zadaného v CP852, GETCWD ho vrátí v CP852. */
+void test_unicard_cp852_chdir_getcwd(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    char *full = g_build_filename(s_test_sd_root, CP852_DIR_UTF8, NULL);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mkdir(full, 0755), "mkdir adresáře s UTF-8 jménem");
+    g_free(full);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCHDIR);
+    uc_send_str("/" CP852_DIR_CARD);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "CHDIR v CP852 nesmí ERROR");
+    recv_cmdGETCWD_expect("0:/" CP852_DIR_CARD "\x0d");
+}
+
+
+/* uc1: jména jdou beze změny (jako dřív). Jen MZ-800 (uc1 jinde není). */
+void test_unicard_uc1_names_unchanged(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    if (g_mzarch_platform_numeric != 800) return;
+
+    create_test_file(CP852_FILE_UTF8, 3);
+    unicard_set_fw(UNICARD_FW_UC1);
+    char out[2048];
+    uc_read_filelist("/", out, sizeof(out));
+    unicard_set_fw(UNICARD_FW_UC3);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, CP852_FILE_UTF8 "\r3\r"), "uc1 posílá jméno beze změny");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2386,6 +2537,14 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_readonly_blocks_truncate);
     RUN_TEST(test_unicard_readonly_persists_session);
     RUN_TEST(test_unicard_readonly_allows_read);
+
+    /* Jména v kódové stránce karty (uc3: CP852). */
+    RUN_TEST(test_unicard_cp852_filelist);
+    RUN_TEST(test_unicard_cp852_open);
+    RUN_TEST(test_unicard_cp852_stat);
+    RUN_TEST(test_unicard_cp852_length_in_card_cp);
+    RUN_TEST(test_unicard_cp852_chdir_getcwd);
+    RUN_TEST(test_unicard_uc1_names_unchanged);
 
     int result = UNITY_END();
 

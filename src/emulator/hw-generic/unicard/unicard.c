@@ -121,6 +121,67 @@ en_UNICARD_FW unicard_get_fw ( void ) {
 }
 
 
+/**
+ * @brief Posílá emulovaný firmware jména souborů v CP852?
+ *
+ * uc3 (firmware mk3b, FatFS FF_CODE_PAGE 852, SBCS) posílá a přijímá jména
+ * a cesty v CP852. Hostitelský souborový systém má UTF-8. uc1 zůstává
+ * beze změny (jména jdou skrz tak, jak jsou).
+ */
+static int unicard_names_cp852 ( void ) {
+    return ( unicard_get_fw ( ) == UNICARD_FW_UC3 );
+}
+
+
+/**
+ * @brief Jméno nebo cesta od klienta (kódová stránka karty) -> UTF-8.
+ *
+ * @param s jméno/cesta tak, jak přišla portem karty
+ * @return nově alokovaný UTF-8 řetězec (g_free). Když převod nejde, kopie
+ *         vstupu.
+ */
+static char* unicard_name_from_card ( const char *s ) {
+    if ( !s ) return NULL;
+    if ( unicard_names_cp852 ( ) ) {
+        char *u = g_convert ( s, -1, "UTF-8", "CP852", NULL, NULL, NULL );
+        if ( u ) return u;
+    };
+    return g_strdup ( s );
+}
+
+
+/**
+ * @brief Hostitelské jméno (UTF-8) -> kódová stránka karty.
+ *
+ * Reálná karta (FatFS, FF_MAX_LFN 32) jméno, které neumí zobrazit (znak mimo
+ * CP852) nebo které se nevejde do 31 znaků, nevrací pod dlouhým jménem.
+ *
+ * @param utf8 hostitelské jméno
+ * @param out výstup (NUL-terminovaný)
+ * @param size velikost výstupu včetně terminátoru
+ * @return délka jména v kódové stránce karty, nebo -1 když se nevejde do
+ *         @p size nebo má znak, který kódová stránka nemá
+ */
+static int unicard_name_to_card ( const char *utf8, char *out, size_t size ) {
+    char *c;
+    gsize len;
+    if ( unicard_names_cp852 ( ) ) {
+        c = g_convert ( utf8, -1, "CP852", "UTF-8", NULL, &len, NULL );
+        if ( !c ) return -1;
+    } else {
+        c = g_strdup ( utf8 );
+        len = strlen ( c );
+    };
+    if ( len + 1 > size ) {
+        g_free ( c );
+        return -1;
+    };
+    memcpy ( out, c, len + 1 );
+    g_free ( c );
+    return (int) len;
+}
+
+
 void unicard_set_fw ( en_UNICARD_FW fw ) {
     /* uc1 firmware existuje jen pro MZ-800 - na ostatních platformách
      * ignoruj pokus o přepnutí. */
@@ -1065,7 +1126,10 @@ char* unicard_jail_resolve_with_naked ( const char *emu_path, char **naked_out )
     if ( naked_out ) *naked_out = NULL;
 
     int escape = 0;
-    char *naked = unicard_normalize_emu_path ( emu_path, &escape );
+    /* Cesta přišla v kódové stránce karty (uc3: CP852), hostitel má UTF-8. */
+    char *emu_path_utf8 = unicard_name_from_card ( emu_path );
+    char *naked = unicard_normalize_emu_path ( emu_path_utf8, &escape );
+    g_free ( emu_path_utf8 );
 
     if ( escape ) {
         g_warning ( "Unicard SD jail violation: emu tried to access '%s' (escapes SD root '%s')",
@@ -1177,6 +1241,9 @@ int unicard_get_cwd ( FRESULT *ff_res, char *buff, int buff_size ) {
     // na skutecne unikarte je potreba z vystupu getcwd odstranit prvni 2 znaky "0:" 
     // *ff_res = f_getcwd ( (char*) buff_local, buff_size );
     *ff_res = FR_OK;
+    /* work_dir je hostitelská (UTF-8) cesta, klient ji dostane v kódové
+     * stránce karty. */
+    if ( unicard_name_to_card ( g_unicard.work_dir, buff, buff_size ) >= 0 ) return EXIT_SUCCESS;
     int len = strlen ( g_unicard.work_dir );
     if ( len < buff_size ) {
         memcpy ( buff, g_unicard.work_dir, len + 1 );
@@ -1328,14 +1395,19 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
     /* Workaround pro V2.11b sort bug (viz st_UNICARD_DIR.forced_first_dir
      * v unicard.h): při position == 0 a forced_first_dir != NULL emitneme
      * ten dir jako PRVNÍ entry, aby root listing začal dirí. */
+    /* Jméno pro klienta v kódové stránce karty (uc3: CP852). */
+    char cname[_MAX_LFN];
+
     if ( ( dir->position == 0 ) && ( dir->forced_first_dir != NULL ) ) {
         dir->position++;
-        snprintf ( buff, buff_size, "%s/%c0%c", dir->forced_first_dir, 0x0d, 0x0d );
+        if ( unicard_name_to_card ( dir->forced_first_dir, cname, sizeof ( cname ) ) < 0 ) {
+            g_strlcpy ( cname, dir->forced_first_dir, sizeof ( cname ) );
+        };
+        snprintf ( buff, buff_size, "%s/%c0%c", cname, 0x0d, 0x0d );
         return FR_OK;
     };
 
     const gchar *filename;
-    int length;
 
     do {
         filename = g_dir_read_name ( dir->dh );
@@ -1345,10 +1417,11 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
             return FR_OK;
         };
 
-        length = strlen ( filename );
-
-        if ( length >= _MAX_LFN ) {
-            fprintf ( stderr, "%s():%d - Filename is too long '%s'\n", __func__, __LINE__, filename );
+        /* Délka se počítá v kódové stránce karty (CP852 1 bajt na znak),
+         * ne v bajtech UTF-8. */
+        if ( unicard_name_to_card ( filename, cname, sizeof ( cname ) ) < 0 ) {
+            fprintf ( stderr, "%s():%d - Filename is too long or not in the card's code page '%s'\n",
+                      __func__, __LINE__, filename );
             continue;
         };
 
@@ -1367,11 +1440,11 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
     gchar *filepath = g_build_filename ( unicard_get_sd_root_dirpath ( ), dir->dirpath, filename, NULL );
 
     if ( g_file_test ( filepath, G_FILE_TEST_IS_DIR ) ) {
-        snprintf ( buff, buff_size, "%s/%c0%c", filename, 0x0d, 0x0d );
+        snprintf ( buff, buff_size, "%s/%c0%c", cname, 0x0d, 0x0d );
     } else {
         GStatBuf statbuf;
         g_stat ( filepath, &statbuf );
-        snprintf ( buff, buff_size, "%s%c%d%c", filename, 0x0d, (uint32_t) statbuf.st_size, 0x0d );
+        snprintf ( buff, buff_size, "%s%c%d%c", cname, 0x0d, (uint32_t) statbuf.st_size, 0x0d );
     };
 
     g_free ( filepath );
@@ -1416,11 +1489,17 @@ static void unicard_fill_lfname ( st_UNICARD_FILINFO *finfo, const char *name,
     /* uc3 plní off 23 vždy (primární jméno); uc1 jen pro jména s LFN. */
     gboolean fill = ( style == UNICARD_SFN_STYLE_UC3 ) ? TRUE : has_lfn;
     if ( fill ) {
-        size_t len = strlen ( name );
-        size_t lfn_copy = len < ( _MAX_LFN - 1 ) ? len : ( _MAX_LFN - 1 );
-        memcpy ( finfo->lfname, name, lfn_copy );
-        finfo->lfname[lfn_copy] = '\0';
-        finfo->lfn_strlen = (uint8_t) lfn_copy;
+        /* Jméno v kódové stránce karty (uc3: CP852). */
+        int clen = unicard_name_to_card ( name, finfo->lfname, _MAX_LFN );
+        if ( clen < 0 ) {
+            /* Nevejde se nebo má znak mimo kódovou stránku: zkrácené jako dřív. */
+            size_t len = strlen ( name );
+            size_t lfn_copy = len < ( _MAX_LFN - 1 ) ? len : ( _MAX_LFN - 1 );
+            memcpy ( finfo->lfname, name, lfn_copy );
+            finfo->lfname[lfn_copy] = '\0';
+            clen = (int) lfn_copy;
+        };
+        finfo->lfn_strlen = (uint8_t) clen;
     } else {
         finfo->lfname[0] = '\0';
         finfo->lfn_strlen = 0;
@@ -1438,7 +1517,6 @@ FRESULT unicard_dir_read_filinfo ( st_UNICARD_DIR *dir, st_UNICARD_FILINFO *finf
     if ( dir->dh == NULL ) return FR_DISK_ERR;
 
     const gchar *filename;
-    int length;
 
     /* uc1 (manager V2.4) očekává ".." jako první položku v podadresáři -
      * reálný FW ji posílá. uc3 (manager V2.11b) si ji přidává sám, takže
@@ -1475,16 +1553,18 @@ FRESULT unicard_dir_read_filinfo ( st_UNICARD_DIR *dir, st_UNICARD_FILINFO *finf
         return FR_OK;
     }
 
-    /* Skip příliš dlouhých LFN + skip forced_first_dir (= už emitnut výše). */
+    /* Skip příliš dlouhých LFN + skip forced_first_dir (= už emitnut výše).
+     * Délka se počítá v kódové stránce karty (uc3: CP852). */
     do {
         filename = g_dir_read_name ( dir->dh );
         if ( filename == NULL ) {
             *eof = 1;
             return FR_OK;
         };
-        length = strlen ( filename );
-        if ( length >= _MAX_LFN ) {
-            fprintf ( stderr, "%s():%d - Filename too long, skip '%s'\n", __func__, __LINE__, filename );
+        char cname[_MAX_LFN];
+        if ( unicard_name_to_card ( filename, cname, sizeof ( cname ) ) < 0 ) {
+            fprintf ( stderr, "%s():%d - Filename too long or not in the card's code page, skip '%s'\n",
+                      __func__, __LINE__, filename );
             continue;
         };
         if ( ( dir->forced_first_dir != NULL ) &&

@@ -1,3 +1,5 @@
+	- BUGFIX: Unicard uc3 - jména souborů a cesty šly rozhraním karty v UTF-8 hostitele. Skutečná karta (firmware mk3b, FatFS s kódovou stránkou 852) je posílá a přijímá v CP852, takže jména s diakritikou (např. česká) byla v emulátoru rozsypaná a nešla otevřít. Emulace teď převádí mezi CP852 a UTF-8 hostitele ve výpisu adresáře, v informacích o souboru, v aktuálním adresáři a ve všech cestách. Limit 31 znaků dlouhého jména se teď počítá ve znacích CP852, ne v bajtech UTF-8. uc1 se nemění.
+
 	- BUGFIX: CTC 8253 a reproduktor - okamžik zápisu do CTC (včetně GATE CTC0) a změny reproduktoru se počítal, jako by už provedená část instrukce uběhla dvakrát, např. 14 cyklů CPU od začátku LD (HL),A, která trvá 7. CTC0 tak začínal čítat o několik period CLK0 později a hrany reproduktoru dostávaly o stejnou dobu pozdější čas. Nahrávání hodnoty do CTC naměřené na skutečném MZ-800 se nemění.
 
 	- BUGFIX: Debugger - každé uložení metadat ve formátu JSON ztratilo v paměti celý strom JSON: záznamy trace (každý chunk přepisuje svá metadata), breakpointy, záložky, watch, proměnné breakpointů a Memory Heatmap. Paměť zabraná dlouhým záznamem trace tak rostla s jeho délkou.
