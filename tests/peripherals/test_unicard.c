@@ -3292,6 +3292,37 @@ void test_unicard_setconfig_errors(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: RESTART 9Bh
+ * ================================================================ */
+
+/* RESTART zavře soubor, vrátí CWD na / a hlásí OK; fw 0.26 ho nezná. */
+void test_unicard_restart_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("f.bin", 4);
+    char *full = g_build_filename(s_test_sd_root, "sub", NULL);
+    g_mkdir(full, 0755);
+    g_free(full);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCHDIR);
+    uc_send_str("/sub");
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/f.bin");
+    uc_send_cmd(cmdRESTART);
+    uint8_t sts = uc_master_status();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & (UNICARD_STS_ERROR | UNICARD_STS_READ), "RESTART = OK, soubor zavřený");
+    recv_cmdGETCWD_expect("0:/\x0d");
+
+    unicard_set_api_rev2(0);
+    uc_send_cmd(cmdRESTART);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "fw 0.26: RESTART = ERROR");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3424,6 +3455,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_getconfig_status_rev2);
     RUN_TEST(test_unicard_setconfig_rev2);
     RUN_TEST(test_unicard_setconfig_errors);
+
+    /* UC API rev 2: RESTART 9Bh. */
+    RUN_TEST(test_unicard_restart_rev2);
 
     int result = UNITY_END();
 
