@@ -2630,8 +2630,8 @@ GPtrArray* unicard_config_get ( const char *section ) {
     if ( !status ) return recs;
 
     /* STATUS: skutečný stav sítě. Emulace síť nemá: jako použité hlásí
-     * nastavené adresy (bez nich výchozí jako firmware mk3b, main.c) a
-     * LINK 1. */
+     * nastavené adresy (bez nich výchozí jako firmware mk3b, main.c),
+     * LINK 1 a stav NTP. */
     GPtrArray *st = g_ptr_array_new_with_free_func ( g_free );
     unicard_config_add ( st, "IPADDR", unicard_config_value ( recs, "IPADDR", "192.168.1.10" ) );
     unicard_config_add ( st, "NETMASK", unicard_config_value ( recs, "NETMASK", "255.255.255.0" ) );
@@ -2644,6 +2644,9 @@ GPtrArray* unicard_config_get ( const char *section ) {
     char version[32];
     snprintf ( version, sizeof ( version ), "mz800emu v%d.%d", UNICARD_FW_UC3_MAJOR, UNICARD_FW_UC3_MINOR );
     unicard_config_add ( st, "VERSION", version );
+    /* NTP (firmware 0.28): hodiny z NTP jen s TIMEZONE v network.cfg a nenastavenými hodinami (rok 2000).
+     * Hodiny emulace jdou podle PC, jsou tedy nastavené: s TIMEZONE KEPT, bez něj OFF. */
+    unicard_config_add ( st, "NTP", ( unicard_config_value ( recs, "TIMEZONE", "" )[0] != 0x00 ) ? "KEPT" : "OFF" );
     g_ptr_array_free ( recs, TRUE );
     return st;
 }
