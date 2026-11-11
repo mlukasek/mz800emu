@@ -740,6 +740,31 @@ extern "C" {
      */
     extern FRESULT unicard_copy ( const char *src_path, const char *dst_path );
 
+    /**
+     * @brief Záznamy sekce konfigurace karty (GETCONFIG 92h, UC API rev 2).
+     *
+     * Sekce (velkými písmeny): NETWORK ({SD}/unicard/network.cfg), MZ, MZ800,
+     * MZ700, MZ1500 ({SD}/unicard/unicard.cfg) a jen ke čtení STATUS (stav
+     * sítě; emulace hlásí nastavené adresy a LINK 1).
+     *
+     * @param section sekce
+     * @return pole záznamů po UNICARD_INI_REC_SIZE bajtech (klíč 16 + hodnota
+     *         64), prázdné pro neznámou sekci nebo chybějící soubor;
+     *         g_ptr_array_free(pole, TRUE)
+     */
+    extern GPtrArray* unicard_config_get ( const char *section );
+
+    /**
+     * @brief Nastaví klíč v konfiguraci karty (SETCONFIG 99h, UC API rev 2).
+     *
+     * @param section sekce (NETWORK, MZ, MZ800, MZ700, MZ1500)
+     * @param key klíč (velkými písmeny)
+     * @param value hodnota; prázdná klíč smaže
+     * @return FR_OK; FR_INVALID_PARAMETER pro jinou sekci (i STATUS);
+     *         FR_WRITE_PROTECTED (R/O SD); FR_DISK_ERR
+     */
+    extern FRESULT unicard_config_set ( const char *section, const char *key, const char *value );
+
     void unicard_ui_select_sd_root_directory(void);
 
     /**

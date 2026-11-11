@@ -429,7 +429,9 @@ extern "C" {
 
 /* UC API rev 2 (uc3 + volba api_rev2), kódy podle MZPico, specifikace
  * UC-UniMgr docs/api.md. */
+#define cmdGETCONFIG    0x92    // str sekce: proud záznamů 80 B (klíč 16 + hodnota 64)
 #define cmdINFO         0x95    // 16 B: [0] revize 2, [1] deska, [3] příznaky MZPico, [8-9] příznaky UC
+#define cmdSETCONFIG    0x99    // str sekce, str klíč, str hodnota (prázdná = smazat)
 #define cmdMOUNTS       0x98    // text: "j:cesta" 0Dh pro jednotky 1 2 3 4 R Q E S (0-7)
 #define cmdCOPY         0x9A    // str zdroj, str cíl: kopie souboru, cíl přepíše
 
