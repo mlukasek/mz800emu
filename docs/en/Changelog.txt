@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - new command RESTART 9Bh: restarts the card's firmware (not the computer), the repository is then as after power-on (no open file or directory, current directory /, SharpASCII conversion off). The card's clock keeps running.
+
 	- Unicard UC API rev 2 (api_rev2) - new commands GETCONFIG 92h and SETCONFIG 99h for the card's configuration: section NETWORK (/unicard/network.cfg), MZ, MZ800, MZ700, MZ1500 (/unicard/unicard.cfg) and the read-only STATUS (the network state; the emulation has no network and reports the configured addresses, or the firmware defaults, and link up). GETCONFIG gives a stream of 80-byte records (key 16 + value 64) like the binary directory listing; the files are read with the rules of the mk3b firmware. SETCONFIG rewrites one key and keeps comments, order and the other sections; an empty value deletes the key.
 
 	- Unicard UC API rev 2 (api_rev2) - new command COPY 9Ah: copies a file on the SD card, an existing destination is overwritten. Errors: 2 empty path, 5 a file is open, 6 FatFS (the source does not exist, the destination is a directory ...).

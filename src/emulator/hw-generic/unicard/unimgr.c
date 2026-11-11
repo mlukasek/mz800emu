@@ -777,7 +777,7 @@ static void do_cmdRTCSET ( void ) {
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
 #define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY | \
-                               UC_INFO_CONFIG )
+                               UC_INFO_CONFIG | UC_INFO_RESTART )
 
 /**
  * cmdGETCONFIG (UC API rev 2) - záznamy sekce konfigurace karty.
@@ -1385,6 +1385,20 @@ static void unimgr_write_CMD ( uint8_t data ) {
                 } else {
                     do_cmdSETCONFIG ( UNIMGR_CMDSTATE_START );
                 };
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+                g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
+            };
+            break;
+
+        case cmdRESTART:
+            if ( unicard_get_api_rev2 ( ) ) {
+                /* Restart firmwaru karty: repozitář jako po zapnutí (soubor,
+                 * adresář i proud konfigurace zavřené, CWD /, převod SharpASCII
+                 * vypnutý). Hodiny karty jdou dál (baterie). Síť emulace nemá,
+                 * není co znovu nastavit. */
+                do_cmdRESET ( );
             } else {
                 fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
                           __func__, __LINE__, g_unimgr.cmd );

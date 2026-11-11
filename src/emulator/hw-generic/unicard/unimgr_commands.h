@@ -434,6 +434,7 @@ extern "C" {
 #define cmdSETCONFIG    0x99    // str sekce, str klíč, str hodnota (prázdná = smazat)
 #define cmdMOUNTS       0x98    // text: "j:cesta" 0Dh pro jednotky 1 2 3 4 R Q E S (0-7)
 #define cmdCOPY         0x9A    // str zdroj, str cíl: kopie souboru, cíl přepíše
+#define cmdRESTART      0x9B    // restart firmwaru karty (počítač ne), repozitář jako po zapnutí
 
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
