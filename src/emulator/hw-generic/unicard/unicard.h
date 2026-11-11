@@ -625,6 +625,30 @@ extern "C" {
     extern FRESULT unicard_chmod ( const char *path, uint8_t attr, uint8_t mask );
 
     extern void unicard_fdc_mount ( uint8_t drive_id, char *filepath );
+
+    /**
+     * @brief Zapíše nebo smaže konfiguraci jednotky jako firmware mk3b
+     *        (cmdMOUNT): {SD}/unicard/fd0..fd3.cfg, ramdisc.cfg, qd.cfg,
+     *        emm.cfg, sasi.cfg.
+     *
+     * @param dev_id jednotka 0-7
+     * @param card_path cesta k obrazu tak, jak přišla portem (kódová stránka
+     *        karty); prázdná = smazat konfiguraci
+     * @return FR_OK; FR_NO_FILE když mazaná konfigurace neexistuje;
+     *         FR_INVALID_PARAMETER pro dev_id > 7; FR_WRITE_PROTECTED (R/O
+     *         SD); FR_DISK_ERR
+     */
+    extern FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path );
+
+    /**
+     * @brief Existuje obraz jednotky? Cestu bere jako firmware při načtení
+     *        konfigurace: relativní je od kořene SD, ne od CWD.
+     *
+     * @param card_path cesta v kódové stránce karty
+     * @return 1 když je to existující soubor, jinak 0
+     */
+    extern int unicard_mount_image_exists ( const char *card_path );
+
     void unicard_ui_select_sd_root_directory(void);
 
     /**
