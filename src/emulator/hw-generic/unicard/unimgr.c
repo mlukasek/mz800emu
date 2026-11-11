@@ -784,7 +784,8 @@ static void do_cmdRTCSET ( void ) {
  *
  * Vstup S: sekce. Výstup: proud záznamů 80 B (klíč 16 + hodnota 64) jako
  * READDIR, dokud běží, svítí stav bit 2. Neznámá sekce nebo chybějící soubor
- * = prázdný proud. Otevřený adresář se zavře, soubor zůstane.
+ * = prázdný proud. Otevřený adresář se zavře. S otevřeným souborem chyba 5
+ * jako ve firmwaru 0.27 (ten pro proud používá vyrovnávací paměť souboru).
  */
 static void do_cmdGETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
     if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
@@ -795,6 +796,10 @@ static void do_cmdGETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
         return;
     };
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) {
+        g_unimgr.err_code = UC_ERR_BUSY;
+        return;
+    };
     char *section = g_ascii_strup ( (char*) g_unimgr.buf_byte, -1 );
     g_unimgr.cfg_recs = unicard_config_get ( section );
     g_free ( section );
