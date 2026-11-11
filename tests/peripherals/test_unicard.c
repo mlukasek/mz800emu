@@ -2460,6 +2460,162 @@ void test_unicard_uc1_names_unchanged(void)
 }
 
 
+/* ================================================================
+ * Jména, která karta pod dlouhým jménem neukáže (uc3: 8.3 alias jako
+ * FatFS s FF_MAX_LFN 32)
+ * ================================================================ */
+
+#define LONG_ASCII_NAME "a_very_long_file_name_with_more_than_31_chars.mzf"
+#define LONG_DIR_NAME   "a directory with a very long name here"
+#define JAPAN_NAME      "\xE3" "\x83" "\x86" "\xE3" "\x82" "\xB9" "\xE3" "\x83" "\x88" ".mzf"   /* テスト.mzf */
+
+/* Alias jména bez kolizí (v testovacím kořeni nic nekoliduje). */
+static void alias_of(const char *name, char out[13])
+{
+    sfn_single(name, out);
+    TEST_ASSERT_TRUE_MESSAGE(out[0] != 0x00, "Alias nesmí být prázdný");
+}
+
+
+/* uc3: FILELIST ukáže dlouhé jméno a jméno se znakem mimo CP852 jako 8.3 alias. */
+void test_unicard_alias_filelist(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(LONG_ASCII_NAME, 3);
+    create_test_file(JAPAN_NAME, 4);
+    char a_long[13], a_jp[13];
+    alias_of(LONG_ASCII_NAME, a_long);
+    alias_of(JAPAN_NAME, a_jp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strchr(a_long, '~'), "Alias dlouhého jména má ~N");
+
+    char out[2048], line[64];
+    uc_read_filelist("/", out, sizeof(out));
+    snprintf(line, sizeof(line), "%s\r3\r", a_long);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, line), "Dlouhé jméno jako 8.3 alias");
+    snprintf(line, sizeof(line), "%s\r4\r", a_jp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, line), "Jméno mimo CP852 jako 8.3 alias");
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, "a_very_long"), "Dlouhé jméno se nesmí poslat");
+}
+
+
+/* uc3: OPEN a STAT podle aliasu najdou hostitelský soubor; STAT vrátí alias
+ * jako jméno. */
+void test_unicard_alias_open_stat(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(LONG_ASCII_NAME, 5);
+    char a[13], path[20];
+    alias_of(LONG_ASCII_NAME, a);
+    snprintf(path, sizeof(path), "/%s", a);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str(path);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "OPEN podle aliasu");
+    for (int i = 0; i < 5; i++) {
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE((uint8_t)i, uc_recv_data(), "Obsah souboru");
+    }
+    uc_close();
+
+    uc_send_cmd(cmdSTAT);
+    uc_send_str(path);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "STAT podle aliasu");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(5, uc_recv_dword_le(), "Velikost");
+    for (int i = 0; i < 5 + 13; i++) (void)uc_recv_data();  /* fdate, ftime, fattrib, fname[13] */
+    uint8_t lfn_strlen = uc_recv_data();
+    char lfn[_MAX_LFN + 1];
+    for (int i = 0; i < _MAX_LFN; i++) lfn[i] = (char)uc_recv_data();
+    lfn[_MAX_LFN] = '\0';
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(a, lfn, "STAT: jméno = alias");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(strlen(a), lfn_strlen, "STAT: délka aliasu");
+}
+
+
+/* uc3: READDIR vrátí alias jako jméno (offset 23). */
+void test_unicard_alias_readdir(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file(LONG_ASCII_NAME, 1);
+    char a[13];
+    alias_of(LONG_ASCII_NAME, a);
+    int found = 0;
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdREADDIR);
+    uc_send_str("/");
+    for (int iter = 0; iter < 100; iter++) {
+        uint32_t fsize;
+        uint8_t fattrib;
+        char name[_MAX_LFN + 1];
+        if (!uc_read_dir_filinfo(&fsize, &fattrib, name, sizeof(name))) break;
+        if (0 == strcmp(name, a)) found = 1;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, "READDIR musí vrátit alias dlouhého jména");
+}
+
+
+/* uc3: CHDIR podle aliasu do adresáře s dlouhým jménem, GETCWD vrátí alias. */
+void test_unicard_alias_chdir_getcwd(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    char *full = g_build_filename(s_test_sd_root, LONG_DIR_NAME, NULL);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mkdir(full, 0755), "mkdir adresáře s dlouhým jménem");
+    g_free(full);
+    char a[13], path[20], cwd[24];
+    alias_of(LONG_DIR_NAME, a);
+    snprintf(path, sizeof(path), "/%s", a);
+    snprintf(cwd, sizeof(cwd), "0:/%s\x0d", a);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCHDIR);
+    uc_send_str(path);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "CHDIR podle aliasu");
+    recv_cmdGETCWD_expect(cwd);
+}
+
+
+/* uc3: i soubor s dlouhým jménem, které se vejde, jde otevřít 8.3 aliasem
+ * (FatFS hledá i podle krátkého jména). */
+void test_unicard_alias_of_name_that_fits(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("Moje data.txt", 2);
+    char a[13], path[20];
+    alias_of("Moje data.txt", a);
+    snprintf(path, sizeof(path), "/%s", a);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str(path);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "OPEN podle aliasu");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READ, uc_master_status() & UNICARD_STS_READ, "Otevřeno");
+    uc_close();
+}
+
+
+/* uc1: dlouhé jméno se dál vynechá (beze změny). Jen MZ-800. */
+void test_unicard_uc1_long_name_skipped(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    if (g_mzarch_platform_numeric != 800) return;
+
+    create_test_file(LONG_ASCII_NAME, 3);
+    char a[13];
+    alias_of(LONG_ASCII_NAME, a);
+    unicard_set_fw(UNICARD_FW_UC1);
+    char out[2048];
+    uc_read_filelist("/", out, sizeof(out));
+    unicard_set_fw(UNICARD_FW_UC3);
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, a), "uc1 alias neposílá");
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, "a_very_long"), "uc1 dlouhé jméno vynechá");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2545,6 +2701,14 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_cp852_length_in_card_cp);
     RUN_TEST(test_unicard_cp852_chdir_getcwd);
     RUN_TEST(test_unicard_uc1_names_unchanged);
+
+    /* Jména, která se nevejdou (uc3: 8.3 alias). */
+    RUN_TEST(test_unicard_alias_filelist);
+    RUN_TEST(test_unicard_alias_open_stat);
+    RUN_TEST(test_unicard_alias_readdir);
+    RUN_TEST(test_unicard_alias_chdir_getcwd);
+    RUN_TEST(test_unicard_alias_of_name_that_fits);
+    RUN_TEST(test_unicard_uc1_long_name_skipped);
 
     int result = UNITY_END();
 
