@@ -2631,6 +2631,53 @@ FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path ) {
 }
 
 
+FRESULT unicard_copy ( const char *src_path, const char *dst_path ) {
+    if ( unicard_test_readonly ( ) ) {
+        unicard_warn_readonly_blocked ( );
+        return FR_WRITE_PROTECTED;
+    };
+    char *src = unicard_jail_resolve ( src_path );
+    char *dst = unicard_jail_resolve ( dst_path );
+    FRESULT res = FR_OK;
+    if ( !src || !dst ) {
+        res = FR_NO_PATH;
+    } else if ( !g_file_test ( src, G_FILE_TEST_IS_REGULAR ) ) {
+        res = FR_NO_FILE;                   /* neexistuje nebo je to adresář */
+    } else if ( g_file_test ( dst, G_FILE_TEST_IS_DIR ) || ( 0 == strcmp ( src, dst ) ) ) {
+        res = FR_DENIED;
+    } else {
+        char *dst_dir = g_path_get_dirname ( dst );
+        if ( !g_file_test ( dst_dir, G_FILE_TEST_IS_DIR ) ) res = FR_NO_PATH;
+        g_free ( dst_dir );
+    };
+
+    if ( res == FR_OK ) {
+        /* Po blocích: obrazy disků mají i stovky MB. */
+        FILE *in = g_fopen ( src, "rb" );
+        FILE *out = in ? g_fopen ( dst, "wb" ) : NULL;
+        if ( !in || !out ) {
+            res = FR_DISK_ERR;
+        } else {
+            static uint8_t buf[65536];
+            size_t n;
+            while ( ( n = fread ( buf, 1, sizeof ( buf ), in ) ) > 0 ) {
+                if ( fwrite ( buf, 1, n, out ) != n ) {
+                    res = FR_DISK_ERR;
+                    break;
+                };
+            };
+            if ( ferror ( in ) ) res = FR_DISK_ERR;
+        };
+        if ( in ) fclose ( in );
+        if ( out && ( fclose ( out ) != 0 ) ) res = FR_DISK_ERR;
+    };
+
+    if ( src ) baseui_tools_mem_free ( src );
+    if ( dst ) baseui_tools_mem_free ( dst );
+    return res;
+}
+
+
 int unicard_mount_image_exists ( const char *card_path ) {
     if ( !card_path || ( card_path[0] == 0x00 ) ) return 0;
     /* FDC_setFDfromCFG: relativní cestu doplní '/' na začátek (od kořene). */

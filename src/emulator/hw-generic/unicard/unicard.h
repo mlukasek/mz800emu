@@ -729,6 +729,17 @@ extern "C" {
      */
     extern int unicard_mount_image_exists ( const char *card_path );
 
+    /**
+     * @brief Zkopíruje soubor (COPY 9Ah, UC API rev 2); cíl přepíše.
+     *
+     * @param src_path zdroj (kódová stránka karty)
+     * @param dst_path cíl (kódová stránka karty)
+     * @return FR_OK; FR_NO_FILE zdroj není soubor; FR_NO_PATH cílový adresář
+     *         není; FR_DENIED cíl je adresář nebo totéž co zdroj;
+     *         FR_WRITE_PROTECTED (R/O SD); FR_DISK_ERR
+     */
+    extern FRESULT unicard_copy ( const char *src_path, const char *dst_path );
+
     void unicard_ui_select_sd_root_directory(void);
 
     /**

@@ -3079,6 +3079,81 @@ void test_unicard_mounts_absent_in_fw026(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: COPY 9Ah
+ * ================================================================ */
+
+static void uc_copy(const char *src, const char *dst)
+{
+    uc_send_cmd(cmdCOPY);
+    uc_send_str(src);
+    uc_send_str(dst);
+}
+
+
+/* Kopie souboru (i jména v CP852), přepsání existujícího cíle. */
+void test_unicard_copy_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("src.bin", 300);
+    create_test_file("dst.bin", 7);
+    uc_send_cmd(cmdRESET);
+    uc_copy("/src.bin", "/dst.bin");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "COPY = OK");
+    uint8_t buf[400];
+    size_t n = read_file_content("dst.bin", buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(300, n, "cíl přepsaný celým zdrojem");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(299 & 0xff, buf[299], "obsah");
+
+    uc_copy("/src.bin", "/" CP852_FILE_CARD);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "COPY na jméno v CP852");
+    n = read_file_content(CP852_FILE_UTF8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(300, n, "cíl s UTF-8 jménem na hostiteli");
+}
+
+
+/* Chyby: 2 prázdná cesta, 5 otevřený soubor, 6 zdroj není / cíl je adresář. */
+void test_unicard_copy_errors_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("src.bin", 3);
+    uc_send_cmd(cmdRESET);
+    uc_copy("/src.bin", "");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, uc_read_status_byte(2), "prázdný cíl = 2");
+    uc_copy("/nothing.bin", "/x.bin");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_FATFS, uc_read_status_byte(2), "zdroj není = 6");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_NO_FILE, uc_read_status_byte(3), "FR_NO_FILE");
+    uc_copy("/src.bin", "/" UNICARD_UNIMGR_DIR);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "cíl je adresář = FR_DENIED");
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/src.bin");
+    uc_copy("/src.bin", "/x.bin");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "otevřený soubor = 5");
+    uc_close();
+}
+
+
+/* fw 0.26 COPY nezná. */
+void test_unicard_copy_absent_in_fw026(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("src.bin", 3);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCOPY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & (UNICARD_STS_ERROR | UNICARD_STS_BUSY),
+                                    "fw 0.26: COPY = ERROR, bez parametrů");
+    char *full = g_build_filename(s_test_sd_root, "x.bin", NULL);
+    TEST_ASSERT_FALSE_MESSAGE(g_file_test(full, G_FILE_TEST_EXISTS), "nic se nezkopírovalo");
+    g_free(full);
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3200,6 +3275,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_mounts_rev2);
     RUN_TEST(test_unicard_mounts_long_output);
     RUN_TEST(test_unicard_mounts_absent_in_fw026);
+
+    /* UC API rev 2: COPY 9Ah. */
+    RUN_TEST(test_unicard_copy_rev2);
+    RUN_TEST(test_unicard_copy_errors_rev2);
+    RUN_TEST(test_unicard_copy_absent_in_fw026);
 
     int result = UNITY_END();
 

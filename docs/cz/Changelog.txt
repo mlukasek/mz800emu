@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - nový příkaz COPY 9Ah: zkopíruje soubor na SD kartě, existující cíl přepíše. Chyby: 2 prázdná cesta, 5 otevřený soubor, 6 FatFS (zdroj neexistuje, cíl je adresář...).
+
 	- Unicard UC API rev 2 (api_rev2) - nový příkaz MOUNTS 98h: obrazy všech osmi jednotek jako text, pro každou jednotku řádek "jednotka:cesta" (1-4 diskety, R RAM disk, Q QD, E EMM, S SASI), podle konfigurace jednotky, ze které je karta načítá. Výstup může být delší než 255 bajtů.
 
 	- Unicard UC API rev 2 (api_rev2) - neplatné datum nebo čas hodin karty (např. 31. února, rok před 2000) se odmítne chybou (kód 2, neplatný parametr). Firmware 0.26 hlásí úspěch.
