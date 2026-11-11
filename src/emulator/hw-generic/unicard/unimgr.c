@@ -704,6 +704,29 @@ static void do_cmdRTCSET ( void ) {
 }
 
 
+/* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
+ * jméno ve FILINFO emulace uc3 dělá správně vždy. */
+#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN )
+
+/**
+ * cmdINFO (UC API rev 2) - informace o kartě a rozšířeních.
+ *
+ * Výstup 16 B: [0] revize rozšíření 2, [1] deska (mk3b), [3] příznaky MZPico
+ * (emulace nemá Wi-Fi ani NET), [8-9] příznaky UC.
+ */
+static void do_cmdINFO ( void ) {
+    memset ( g_unimgr.buf_byte, 0x00, 16 );
+    g_unimgr.buf_byte[0] = 2;
+    g_unimgr.buf_byte[1] = UC_INFO_BOARD_MK3B;
+    g_unimgr.buf_byte[8] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS & 0xff );
+    g_unimgr.buf_byte[9] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS >> 8 );
+    g_unimgr.buf = g_unimgr.buf_byte;
+    g_unimgr.buf_count = 16;
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
 static void do_cmdRESET ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
@@ -1149,6 +1172,16 @@ static void unimgr_write_CMD ( uint8_t data ) {
             g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
+        case cmdINFO:
+            if ( unicard_get_api_rev2 ( ) ) {
+                do_cmdINFO ( );
+            } else {
+                /* fw 0.26 INFO nezná. */
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+            };
+            break;
+
         case cmdRTCSETD:
         case cmdRTCSETT:
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
@@ -1370,6 +1403,7 @@ static uint8_t unimgr_read_DATA ( void ) {
             case cmdSIZE:
             case cmdGETFREE:
             case cmdSTAT:
+            case cmdINFO:
                 ret = unimgr_output_data_bin ( );
                 break;
 

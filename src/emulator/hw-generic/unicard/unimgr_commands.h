@@ -427,6 +427,22 @@ extern "C" {
 #define cmdDNSRES       0x89    // uc3: DNS response
 
 
+/* UC API rev 2 (uc3 + volba api_rev2), kódy podle MZPico, specifikace
+ * UC-UniMgr docs/api.md. */
+#define cmdINFO         0x95    // 16 B: [0] revize 2, [1] deska, [3] příznaky MZPico, [8-9] příznaky UC
+
+/* INFO [8-9]: příznaky UC (WORD LE). */
+#define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
+#define UC_INFO_MOUNTS      0x0002  // MOUNTS 98h
+#define UC_INFO_COPY        0x0004  // COPY 9Ah
+#define UC_INFO_SEEK        0x0008  // SEEK a TELL podle logické pozice
+#define UC_INFO_LFN         0x0010  // dlouhé jméno ve FILINFO
+#define UC_INFO_EJECT_OK    0x0020  // MOUNT s prázdnou cestou hlásí OK
+#define UC_INFO_RESTART     0x0040  // RESTART 9Bh
+
+#define UC_INFO_BOARD_MK3B  0x01    // INFO [1]: Unicard mk3b
+
+
 // Interni prikazy - provadi se jinak, nez pres CMD port:
 
 #define cmdINTGETC		0xf0	// Getchar - precteni 1B na data portu z otevreneho souboru.

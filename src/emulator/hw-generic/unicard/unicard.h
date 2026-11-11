@@ -216,6 +216,11 @@ extern "C" {
          * Default FDC0. Typ int kvůli cfgelement INT bind. */
         int managed_fdc;
 
+        /* uc3 s rozšířením UC API rev 2 (INFO 95h revize 2, opravy chyb
+         * fw 0.26, GETCONFIG/SETCONFIG, MOUNTS, COPY, RESTART). Bez uc3 se
+         * neuplatní. Specifikace: UC-UniMgr docs/api.md. Default 0. */
+        int api_rev2;
+
         /* Hodiny karty = místní čas hostitele + rtc_offset (sekundy).
          * Nastavuje cmdRTCSETD/cmdRTCSETT (uc3), platí do konce běhu
          * emulátoru. */
@@ -446,6 +451,15 @@ extern "C" {
     extern uint8_t unicard_read_byte ( uint16_t port );
 
     extern void unicard_read_rtc ( st_UNICARD_RTC *rtc );
+
+    /**
+     * @brief Emuluje se UC API rev 2? (uc3 a volba api_rev2)
+     * @return 1 ano, 0 ne
+     */
+    extern int unicard_get_api_rev2 ( void );
+
+    /** @brief Zapne (1) nebo vypne (0) UC API rev 2 (platí jen pro uc3). */
+    extern void unicard_set_api_rev2 ( int on );
 
     /**
      * @brief Nastaví datum hodin karty (čas běží dál).
