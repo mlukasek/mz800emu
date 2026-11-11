@@ -2616,6 +2616,138 @@ void test_unicard_uc1_long_name_skipped(void)
 }
 
 
+/* ================================================================
+ * cmdMOUNT (uc3 = fw 0.26): konfigurace {SD}/unicard/<jednotka>.cfg
+ * ================================================================ */
+
+/* MOUNT jednotky @p dev s cestou @p path. FDC se v těchto testech nespravuje
+ * (managed_fdc NONE): testuje se konfigurace a stav, ne načtení DSK. */
+static void uc_mount(uint8_t dev, const char *path)
+{
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_NONE);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdFDDMOUNT);
+    uc_send_data(dev);
+    uc_send_str(path);
+}
+
+/* Obsah {SD}/unicard/@p name, nebo NULL když není (g_free). */
+static char *read_unicard_cfg(const char *name)
+{
+    char *full = g_build_filename(s_test_sd_root, UNICARD_UNIMGR_DIR, name, NULL);
+    char *data = NULL;
+    if (!g_file_get_contents(full, &data, NULL, NULL)) data = NULL;
+    g_free(full);
+    return data;
+}
+
+
+/* Připojení existujícího obrazu: konfigurace = cesta, jak přišla, OK. */
+void test_unicard_mount_writes_cfg(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("disk.dsk", 16);
+    uc_mount(1, "/disk.dsk");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "MOUNT existujícího obrazu = OK");
+    char *cfg = read_unicard_cfg("fd1.cfg");
+    TEST_ASSERT_NOT_NULL_MESSAGE(cfg, "fd1.cfg musí vzniknout");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("/disk.dsk", cfg, "fd1.cfg = cesta bez konce řádku");
+    g_free(cfg);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
+/* Jednotky 4-7 mají vlastní jména konfigurace (ramdisc, qd, emm, sasi). */
+void test_unicard_mount_cfg_names_4_7(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    static const char *names[4] = { "ramdisc.cfg", "qd.cfg", "emm.cfg", "sasi.cfg" };
+    create_test_file("image.bin", 16);
+    for (uint8_t dev = 4; dev <= 7; dev++) {
+        uc_mount(dev, "/image.bin");
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "MOUNT 4-7 = OK");
+        char *cfg = read_unicard_cfg(names[dev - 4]);
+        TEST_ASSERT_NOT_NULL_MESSAGE(cfg, names[dev - 4]);
+        TEST_ASSERT_EQUAL_STRING("/image.bin", cfg);
+        g_free(cfg);
+    }
+    uc_mount(8, "/image.bin");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "Jednotka 8 = ERROR");
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
+/* Neexistující obraz: konfigurace se zapíše, ale ERROR (načtení selže). */
+void test_unicard_mount_missing_image(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_mount(0, "/nothing.dsk");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR,
+                                    "MOUNT neexistujícího obrazu = ERROR");
+    char *cfg = read_unicard_cfg("fd0.cfg");
+    TEST_ASSERT_NOT_NULL_MESSAGE(cfg, "fd0.cfg se přesto zapíše");
+    TEST_ASSERT_EQUAL_STRING("/nothing.dsk", cfg);
+    g_free(cfg);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
+/* Vysunutí: konfigurace se smaže, fw 0.26 přesto hlásí ERROR. Bez konfigurace
+ * také ERROR. */
+void test_unicard_mount_eject_uc3_error(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("disk.dsk", 16);
+    uc_mount(2, "/disk.dsk");
+    uc_mount(2, "");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR,
+                                    "fw 0.26: vysunutí hlásí ERROR");
+    char *cfg = read_unicard_cfg("fd2.cfg");
+    TEST_ASSERT_NULL_MESSAGE(cfg, "fd2.cfg se smaže");
+    g_free(cfg);
+    uc_mount(2, "");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR,
+                                    "Vysunutí bez konfigurace = ERROR");
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
+/* Relativní cesta je od kořene SD (ne od CWD) a zapíše se, jak přišla; cesta
+ * v CP852 se zapíše v CP852. */
+void test_unicard_mount_relative_and_cp852(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("disk.dsk", 16);
+    char *full = g_build_filename(s_test_sd_root, "sub", NULL);
+    g_mkdir(full, 0755);
+    g_free(full);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdCHDIR);
+    uc_send_str("/sub");
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_NONE);
+    uc_send_cmd(cmdFDDMOUNT);       /* bez RESET: CWD zůstane /sub */
+    uc_send_data(3);
+    uc_send_str("disk.dsk");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "Relativní cesta od kořene");
+    char *cfg = read_unicard_cfg("fd3.cfg");
+    TEST_ASSERT_EQUAL_STRING("disk.dsk", cfg);
+    g_free(cfg);
+
+    create_test_file(CP852_FILE_UTF8, 16);
+    uc_mount(3, "/" CP852_FILE_CARD);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "Cesta v CP852");
+    cfg = read_unicard_cfg("fd3.cfg");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("/" CP852_FILE_CARD, cfg, "fd3.cfg v CP852");
+    g_free(cfg);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2709,6 +2841,13 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_alias_chdir_getcwd);
     RUN_TEST(test_unicard_alias_of_name_that_fits);
     RUN_TEST(test_unicard_uc1_long_name_skipped);
+
+    /* cmdMOUNT (uc3 = fw 0.26): konfigurace jednotek. */
+    RUN_TEST(test_unicard_mount_writes_cfg);
+    RUN_TEST(test_unicard_mount_cfg_names_4_7);
+    RUN_TEST(test_unicard_mount_missing_image);
+    RUN_TEST(test_unicard_mount_eject_uc3_error);
+    RUN_TEST(test_unicard_mount_relative_and_cp852);
 
     int result = UNITY_END();
 

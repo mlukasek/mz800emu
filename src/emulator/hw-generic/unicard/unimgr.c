@@ -796,6 +796,43 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
 }
 
 
+/**
+ * cmdMOUNT jako firmware mk3b 0.26 (uc3).
+ *
+ * Konfigurace jednotky se zapíše do {SD}/unicard/<jednotka>.cfg (prázdná
+ * cesta ji smaže) a jednotka se z ní znovu načte (reload_FDD =
+ * FDC_setFDfromCFG):
+ *   - vysunutí: mechanika se zavře, konfigurace pak chybí a fw 0.26 vrátí
+ *     chybu (disk je přesto venku); když konfigurace nebyla, chyba a nic;
+ *   - neexistující obraz: konfigurace zůstane zapsaná, mechanika je prázdná,
+ *     chyba;
+ *   - jednotky 4-7 (RAM disk, QD, EMM, SASI): emulátor pro ně přes Unicard
+ *     nemá backend, zapíše se jen konfigurace; úspěch, když obraz existuje.
+ */
+static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    g_unimgr.ff_res = unicard_mount_cfg_set ( dev_id, path );
+    if ( FR_OK != g_unimgr.ff_res ) return; /* sts_err zůstává ERROR */
+
+    if ( path[0] == 0x00 ) {
+        if ( dev_id <= 3 ) unicard_fdc_mount ( dev_id, path );
+        return; /* fw 0.26: načtení bez konfigurace = chyba */
+    };
+
+    int exists = unicard_mount_image_exists ( path );
+    if ( dev_id <= 3 ) {
+        /* Relativní cesta je od kořene SD (FDC_setFDfromCFG). */
+        char *p = ( path[0] == '/' ) ? g_strdup ( path ) : g_strconcat ( "/", path, NULL );
+        unicard_fdc_mount ( dev_id, exists ? p : "" );
+        g_free ( p );
+    } else {
+        fprintf ( stderr, "WARNING: Unicard cmdMOUNT: device id %u - only the configuration is written in emulation\n",
+                  dev_id );
+    };
+    if ( exists ) g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
 /* do_cmdFDDMOUNT()
  *
  * Provede remount FDD a ulozi konfiguraci.
@@ -807,6 +844,11 @@ static void do_cmdFDDMOUNT ( en_UNIMGR_CMDSTATE cmd_phase ) {
         unimgr_input_params ( cmd_phase, 0 );
     } else {
         uint8_t dev_id = g_unimgr.buf_byte[0];
+
+        if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
+            unimgr_mount_uc3 ( dev_id, (char*) &g_unimgr.buf_byte[1] );
+            return;
+        };
 
         /* uc1 zná jen id 0-3 (FDD). uc3 přidává id 4-7 (RAMdisc, QDisc,
          * EMMdisc, SASIdisc), ale emulátor pro tyto typy zatím nemá

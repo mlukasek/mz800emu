@@ -2514,6 +2514,48 @@ void unicard_fdc_mount ( uint8_t drive_id, char *filepath ) {
     };
 }
 
+
+FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path ) {
+    /* Jména jako do_cmdMOUNT ve firmwaru mk3b. */
+    static const char *cfg_name[8] = {
+        "fd0.cfg", "fd1.cfg", "fd2.cfg", "fd3.cfg",
+        "ramdisc.cfg", "qd.cfg", "emm.cfg", "sasi.cfg"
+    };
+    if ( dev_id > 7 ) return FR_INVALID_PARAMETER;
+    if ( unicard_test_readonly ( ) ) {
+        unicard_warn_readonly_blocked ( );
+        return FR_WRITE_PROTECTED;
+    };
+
+    char *dir = g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, NULL );
+    char *cfg = g_build_filename ( dir, cfg_name[dev_id], NULL );
+    FRESULT res = FR_OK;
+    if ( card_path[0] == 0x00 ) {
+        /* Prázdná cesta: konfigurace se smaže (f_unlink, chyba když není). */
+        if ( !g_file_test ( cfg, G_FILE_TEST_IS_REGULAR ) || ( g_remove ( cfg ) != 0 ) ) res = FR_NO_FILE;
+    } else {
+        if ( !g_file_test ( dir, G_FILE_TEST_IS_DIR ) ) g_mkdir ( dir, 0755 );
+        /* Cesta se zapíše tak, jak přišla (bajty v kódové stránce karty, bez
+         * konce řádku), jako f_write ve firmwaru. */
+        if ( !g_file_set_contents ( cfg, card_path, strlen ( card_path ), NULL ) ) res = FR_DISK_ERR;
+    };
+    g_free ( cfg );
+    g_free ( dir );
+    return res;
+}
+
+
+int unicard_mount_image_exists ( const char *card_path ) {
+    if ( !card_path || ( card_path[0] == 0x00 ) ) return 0;
+    /* FDC_setFDfromCFG: relativní cestu doplní '/' na začátek (od kořene). */
+    char *path = ( card_path[0] == '/' ) ? g_strdup ( card_path ) : g_strconcat ( "/", card_path, NULL );
+    char *full = unicard_jail_resolve ( path );
+    int exists = ( full != NULL ) && g_file_test ( full, G_FILE_TEST_IS_REGULAR );
+    if ( full ) baseui_tools_mem_free ( full );
+    g_free ( path );
+    return exists;
+}
+
 void unicard_apply_sd_root ( const char *dirpath ) {
     if ( dirpath == NULL || dirpath[0] == 0 ) return;
 
