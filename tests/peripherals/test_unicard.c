@@ -35,6 +35,7 @@
 #define UNICARD_STS_READ      0x08
 #define UNICARD_STS_WRITE     0x10
 #define UNICARD_STS_EOF       0x20
+#define UNICARD_STS_PROGRESS  0x40  /* IN_PROGRESS - operace na pozadí (COPY) */
 #define UNICARD_STS_ERROR     0x80
 
 /* Jméno souboru Unicard Manageru na SD kartě je per-architektura + per-FW.
@@ -3139,6 +3140,99 @@ void test_unicard_copy_errors_rev2(void)
 }
 
 
+/* Obsah souboru z create_test_file (bajt i = i & 0xff)? */
+static int test_file_pattern_ok(const char *rel_path, size_t size)
+{
+    static uint8_t buf[262144];
+    size_t n = read_file_content(rel_path, buf, sizeof(buf));
+    if (n != size) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if (buf[i] != (uint8_t)(i & 0xff)) return 0;
+    }
+    return 1;
+}
+
+
+/* Existuje soubor na SD? */
+static int test_file_exists(const char *rel_path)
+{
+    char *full = g_build_filename(s_test_sd_root, rel_path, NULL);
+    int e = g_file_test(full, G_FILE_TEST_EXISTS);
+    g_free(full);
+    return e;
+}
+
+
+/* COPY na pozadí: 200 000 B po kusech 64 KB, kus na každé čtení stavového
+ * bajtu 0. Bit 6 a průběh v bajtu 2, mezitím ostatní příkazy chyba 5 a kopie
+ * běží dál, na konci bit 6 zhasne a stav je OK. */
+void test_unicard_copy_background_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("big.bin", 200000);
+    uc_send_cmd(cmdRESET);
+    uc_copy("/big.bin", "/big2.bin");
+    uint8_t sts = uc_master_status();                       /* kus 1 */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_PROGRESS, sts & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR),
+                                   "COPY běží na pozadí: bit 6, bez chyby");
+    uint8_t pct = uc_read_status_byte(2);                   /* kus 2 */
+    TEST_ASSERT_TRUE_MESSAGE((pct >= 30) && (pct <= 99), "bajt 2 = průběh v % (2 kusy ze 4)");
+    uc_send_cmd(cmdTELL);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_PROGRESS | UNICARD_STS_ERROR,
+                                   uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR),
+                                   "příkaz během kopie = chyba, kopie běží dál");   /* kus 3 */
+    sts = uc_master_status();                               /* kus 4 = konec */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR),
+                                   "konec: bit 6 zhasl, OK");
+    TEST_ASSERT_TRUE_MESSAGE(test_file_pattern_ok("big2.bin", 200000), "kopie celá a stejná");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(cmdCOPY, uc_read_status_byte(1), "bajt 1 = COPY i po konci");
+}
+
+
+/* COPY na pozadí: odmítnutý příkaz má chybu 5, data také. */
+void test_unicard_copy_background_busy_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("big.bin", 200000);
+    uc_send_cmd(cmdRESET);
+    uc_copy("/big.bin", "/big2.bin");
+    (void) uc_master_status();
+    uc_send_cmd(cmdINFO);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "INFO během kopie = 5");
+    uc_send_data(0x55);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "data během kopie = 5");
+    for (int i = 0; (i < 10) && (uc_master_status() & UNICARD_STS_PROGRESS); i++) {
+    }
+    TEST_ASSERT_TRUE_MESSAGE(test_file_pattern_ok("big2.bin", 200000), "kopie celá i po odmítnutých přístupech");
+}
+
+
+/* COPY na pozadí: STORNO a RESET kopii zruší, nedokončený cíl se smaže. */
+void test_unicard_copy_background_cancel_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("big.bin", 200000);
+    uint8_t cancel[2] = { cmdSTORNO, cmdRESET };
+    for (int c = 0; c < 2; c++) {
+        uc_send_cmd(cmdRESET);
+        uc_copy("/big.bin", "/big3.bin");
+        TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_PROGRESS, "kopie běží");
+        TEST_ASSERT_TRUE_MESSAGE(test_file_exists("big3.bin"), "cíl rozpracovaný");
+        uc_send_cmd(cancel[c]);
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR),
+                                       c ? "RESET: kopie zrušená, OK" : "STORNO: kopie zrušená, OK");
+        TEST_ASSERT_FALSE_MESSAGE(test_file_exists("big3.bin"), "nedokončený cíl smazaný");
+    }
+    TEST_ASSERT_TRUE_MESSAGE(test_file_pattern_ok("big.bin", 200000), "zdroj nedotčený");
+}
+
+
 /* fw 0.26 COPY nezná. */
 void test_unicard_copy_absent_in_fw026(void)
 {
@@ -3453,6 +3547,9 @@ int main(int argc, char *argv[])
     /* UC API rev 2: COPY 9Ah. */
     RUN_TEST(test_unicard_copy_rev2);
     RUN_TEST(test_unicard_copy_errors_rev2);
+    RUN_TEST(test_unicard_copy_background_rev2);
+    RUN_TEST(test_unicard_copy_background_busy_rev2);
+    RUN_TEST(test_unicard_copy_background_cancel_rev2);
     RUN_TEST(test_unicard_copy_absent_in_fw026);
 
     /* UC API rev 2: GETCONFIG, SETCONFIG. */

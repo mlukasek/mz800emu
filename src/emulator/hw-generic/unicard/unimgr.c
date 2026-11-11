@@ -854,6 +854,11 @@ static void do_cmdSETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
  *
  * Vstup SS: zdroj, cíl. Chyby: 2 prázdná cesta, 5 otevřený soubor (karta
  * pro kopii používá stejný FIL), 6 FatFS (zdroj není, cíl je adresář...).
+ *
+ * Kopie běží na pozadí (stav bit 6, bajt 2 = průběh v %): kus po
+ * UNIMGR_COPY_CHUNK B při každém čtení stavového bajtu 0. Mezitím ostatní
+ * příkazy a data dostanou chybu 5 (jako MZPico), STSR projde, STORNO a RESET
+ * kopii zruší a nedokončený cíl smažou. Konec: bit 6 zhasne, OK nebo chyba 6.
  */
 static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
     if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
@@ -872,9 +877,44 @@ static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
         g_unimgr.err_code = UC_ERR_BUSY;
         return;
     };
-    g_unimgr.ff_res = unicard_copy ( src, dst );
+    g_unimgr.ff_res = unicard_copy_start ( src, dst );
     if ( FR_OK != g_unimgr.ff_res ) return;
     g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
+/* COPY na pozadí: kus kopie na jedno čtení stavu (obrazy disků mají stovky MB). */
+#define UNIMGR_COPY_CHUNK 65536
+
+
+/**
+ * COPY na pozadí: další kus. Na konci výsledek kopie do stavu (OK, nebo
+ * chyba 6 s FRESULT).
+ */
+static void unimgr_copy_poll ( void ) {
+    FRESULT res;
+    if ( unicard_copy_step ( UNIMGR_COPY_CHUNK, &res ) ) return;
+    g_unimgr.cmd = cmdCOPY;
+    g_unimgr.err_code = UC_ERR_NONE;
+    g_unimgr.ff_res = res;
+    g_unimgr.sts_err = ( FR_OK == res ) ? UNIMGR_STS_OK : UNIMGR_STS_ERROR;
+}
+
+
+/**
+ * COPY na pozadí: příkaz nebo data mezitím. Vrací 1, když se přístup odmítne
+ * (chyba 5, kopie běží dál). STORNO a RESET kopii zruší a projdou.
+ */
+static int unimgr_copy_busy ( int is_cmd, uint8_t data ) {
+    if ( !unicard_copy_active ( ) ) return 0;
+    if ( is_cmd && ( ( cmdSTORNO == data ) || ( cmdRESET == data ) ) ) {
+        unicard_copy_cancel ( );
+        return 0;
+    };
+    g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    g_unimgr.err_code = UC_ERR_BUSY;
+    g_unimgr.ff_res = FR_OK;
+    return 1;
 }
 
 /* Výstup MOUNTS: 8 řádků "j:" + cesta (nejvýš 255 B) + 0Dh. */
@@ -922,6 +962,7 @@ static void do_cmdINFO ( void ) {
 
 
 static void do_cmdRESET ( void ) {
+    unicard_copy_cancel ( );
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
     unicard_file_close ( &g_unimgr.file );
@@ -1141,6 +1182,7 @@ static void do_cmdFDDMOUNT ( en_UNIMGR_CMDSTATE cmd_phase ) {
 
 
 void unimgr_exit ( void ) {
+    unicard_copy_cancel ( );
     unicard_file_close ( &g_unimgr.file );
     unicard_dir_close ( &g_unimgr.dir );
     unimgr_cfg_close ( );
@@ -1184,6 +1226,8 @@ static void unimgr_write_CMD ( uint8_t data ) {
         //DBGPRINTF ( DBGINF, "do_cmdSTSR: reset sts pointer\n" );
         return;
     };
+
+    if ( unimgr_copy_busy ( 1, data ) ) return;
 
     g_unimgr.cmd = data;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
@@ -1577,6 +1621,7 @@ static void unimgr_write_param ( uint8_t data ) {
 
 
 static void unimgr_write_DATA ( uint8_t data ) {
+    if ( unimgr_copy_busy ( 0, data ) ) return;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
     unimgr_op_start ( );
     if ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) {
@@ -1659,6 +1704,7 @@ static inline uint8_t unimgr_output_data_bin ( void ) {
 static uint8_t unimgr_read_DATA ( void ) {
 
     g_unimgr.sts_pos = 0x00;
+    if ( unimgr_copy_busy ( 0, 0 ) ) return 0x00; /* COPY na pozadí: data až po ní */
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
     unimgr_op_start ( );
 
@@ -1751,6 +1797,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
     switch ( g_unimgr.sts_pos ) {
 
         case 0:
+            if ( unicard_copy_active ( ) ) unimgr_copy_poll ( );
+
             if ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ret |= 0x01; // 0. bit - BUSY(paramRQ)=1
 
             if ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) ret |= 0x02; // 1. bit - CMD_OUTPUT=1
@@ -1768,7 +1816,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
                 if ( EXIT_SUCCESS == unicard_file_is_eof ( &g_unimgr.file ) ) ret |= 0x20; // 5. bit - EOF=1
             };
 
-            // 6. bit - nepouzito
+            if ( unicard_copy_active ( ) ) ret |= 0x40; // 6. bit - IN_PROGRESS (COPY na pozadí)
 
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) ret |= 0x80; // 7. bit - ERROR=1
 
@@ -1783,6 +1831,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) {
                 /* fw 0.26: vždy 0. UC API rev 2: chybový kód podle MZPico. */
                 ret = unicard_get_api_rev2 ( ) ? unimgr_err_code ( ) : 0x00;
+            } else if ( unicard_copy_active ( ) ) {
+                ret = unicard_copy_percent ( ); // průběh COPY na pozadí
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
                 // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti (MOUNTS může mít přes 255 B)
                 ret = ( g_unimgr.buf_count > 0xff ) ? 0xff : (uint8_t) g_unimgr.buf_count;
