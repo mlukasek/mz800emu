@@ -119,6 +119,8 @@ void tearDown(void)
 {
     /* Odpojit unicard - zavře otevřené file/dir handly. */
     unicard_set_connected(UNICARD_CONNECTION_DISCONNECTED);
+    /* Hodiny karty zase podle hostitele (cmdRTCSETD/T v testech). */
+    unicard_rtc_reset();
 
     /* Smazat tmpdir rekurzivně. */
     if (s_test_sd_root) {
@@ -2748,6 +2750,77 @@ void test_unicard_mount_relative_and_cp852(void)
 }
 
 
+/* ================================================================
+ * cmdRTCSETD / cmdRTCSETT (uc3): nastavení hodin karty
+ * ================================================================ */
+
+static void uc_rtc_set(uint8_t cmd, uint8_t a, uint8_t b, uint8_t c)
+{
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmd);
+    uc_send_data(a);
+    uc_send_data(b);
+    uc_send_data(c);
+}
+
+static void uc_rtc_get(uint8_t cmd, uint8_t out[3])
+{
+    uc_send_cmd(cmd);
+    for (int i = 0; i < 3; i++) out[i] = uc_recv_data();
+}
+
+
+/* Nastavené datum se čte zpět, hodiny jdou dál. */
+void test_unicard_rtc_set_date(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_rtc_set(cmdRTCSETD, 1, 2, 2030 - 1980);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "RTCSETD = OK");
+    uint8_t d[3];
+    uc_rtc_get(cmdRTCGETD, d);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d[0], "den");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, d[1], "měsíc");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2030 - 1980, d[2], "rok - 1980");
+}
+
+
+/* Nastavený čas se čte zpět (do 2 s), datum zůstane. */
+void test_unicard_rtc_set_time(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t d0[3], d1[3], t[3];
+    uc_rtc_get(cmdRTCGETD, d0);
+    uc_rtc_set(cmdRTCSETT, 12, 34, 56);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "RTCSETT = OK");
+    uc_rtc_get(cmdRTCGETT, t);
+    uc_rtc_get(cmdRTCGETD, d1);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(12, t[0], "hodina");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(34, t[1], "minuta");
+    TEST_ASSERT_TRUE_MESSAGE((t[2] >= 56) && (t[2] <= 58), "sekunda");
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(d0, d1, 3, "datum se nezmění");
+}
+
+
+/* Neplatné hodnoty fw 0.26 nekontroluje a hlásí OK; emulace je nenastaví. */
+void test_unicard_rtc_invalid_ignored(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_rtc_set(cmdRTCSETD, 1, 2, 2030 - 1980);
+    uc_rtc_set(cmdRTCSETD, 31, 2, 2031 - 1980);     /* 31. 2. */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "neplatné datum = OK");
+    uc_rtc_set(cmdRTCSETD, 5, 5, 1999 - 1980);      /* před 2000 */
+    uc_rtc_set(cmdRTCSETT, 24, 0, 0);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "neplatný čas = OK");
+    uint8_t d[3];
+    uc_rtc_get(cmdRTCGETD, d);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d[0], "datum se nezmění");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2030 - 1980, d[2], "rok se nezmění");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -2848,6 +2921,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_mount_missing_image);
     RUN_TEST(test_unicard_mount_eject_uc3_error);
     RUN_TEST(test_unicard_mount_relative_and_cp852);
+
+    /* cmdRTCSETD / cmdRTCSETT (uc3). */
+    RUN_TEST(test_unicard_rtc_set_date);
+    RUN_TEST(test_unicard_rtc_set_time);
+    RUN_TEST(test_unicard_rtc_invalid_ignored);
 
     int result = UNITY_END();
 

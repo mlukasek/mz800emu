@@ -1172,7 +1172,9 @@ void unicard_read_rtc ( st_UNICARD_RTC *rtc ) {
         return;
     };
     GTimeZone *tz = g_time_zone_new_local ( );
-    GDateTime *datetime = g_date_time_new_now ( tz );
+    GDateTime *now = g_date_time_new_now ( tz );
+    /* Hodiny karty: čas hostitele + posun nastavený klientem. */
+    GDateTime *datetime = g_date_time_add_seconds ( now, (gdouble) g_unicard.rtc_offset );
     rtc->year = g_date_time_get_year ( datetime );
     rtc->month = g_date_time_get_month ( datetime );
     rtc->day = g_date_time_get_day_of_month ( datetime );
@@ -1181,6 +1183,50 @@ void unicard_read_rtc ( st_UNICARD_RTC *rtc ) {
     rtc->sec = g_date_time_get_second ( datetime );
     g_time_zone_unref ( tz );
     g_date_time_unref ( datetime );
+    g_date_time_unref ( now );
+}
+
+
+/**
+ * @brief Nastaví hodiny karty na zadaný místní čas (posun proti hostiteli).
+ *
+ * @return 0, nebo -1 když datum/čas neexistuje
+ */
+static int unicard_rtc_set ( int year, int month, int day, int hour, int min, int sec ) {
+    GTimeZone *tz = g_time_zone_new_local ( );
+    GDateTime *want = g_date_time_new ( tz, year, month, day, hour, min, sec );
+    GDateTime *now = g_date_time_new_now ( tz );
+    g_time_zone_unref ( tz );
+    if ( !want ) {
+        g_date_time_unref ( now );
+        return -1;
+    };
+    g_unicard.rtc_offset = g_date_time_to_unix ( want ) - g_date_time_to_unix ( now );
+    g_date_time_unref ( want );
+    g_date_time_unref ( now );
+    return 0;
+}
+
+
+int unicard_set_rtc_date ( uint8_t day, uint8_t month, uint16_t year ) {
+    /* RTC STM32 karty má rok 0-99 = 2000-2099. */
+    if ( ( year < 2000 ) || ( year > 2099 ) || !g_date_valid_dmy ( day, month, year ) ) return -1;
+    st_UNICARD_RTC cur;
+    unicard_read_rtc ( &cur );
+    return unicard_rtc_set ( year, month, day, cur.hour, cur.min, cur.sec );
+}
+
+
+int unicard_set_rtc_time ( uint8_t hour, uint8_t min, uint8_t sec ) {
+    if ( ( hour > 23 ) || ( min > 59 ) || ( sec > 59 ) ) return -1;
+    st_UNICARD_RTC cur;
+    unicard_read_rtc ( &cur );
+    return unicard_rtc_set ( cur.year, cur.month, cur.day, hour, min, sec );
+}
+
+
+void unicard_rtc_reset ( void ) {
+    g_unicard.rtc_offset = 0;
 }
 
 
