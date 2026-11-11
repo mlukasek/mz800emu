@@ -2962,6 +2962,27 @@ void test_unicard_err_codes_fw026_zero(void)
 }
 
 
+/* rev 2: vysunutí hlásí OK, i pro prázdnou jednotku; konfigurace se smaže. */
+void test_unicard_mount_eject_rev2_ok(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("disk.dsk", 16);
+    uc_mount(2, "/disk.dsk");
+    uc_mount(2, "");
+    uint8_t sts = uc_master_status();
+    char *cfg = read_unicard_cfg("fd2.cfg");
+    uc_mount(2, "");
+    uint8_t sts_empty = uc_master_status();
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR, "rev 2: vysunutí = OK");
+    TEST_ASSERT_NULL_MESSAGE(cfg, "fd2.cfg se smaže");
+    g_free(cfg);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts_empty & UNICARD_STS_ERROR, "rev 2: vysunutí prázdné jednotky = OK");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3076,6 +3097,7 @@ int main(int argc, char *argv[])
     /* UC API rev 2: chybové kódy. */
     RUN_TEST(test_unicard_err_codes_rev2);
     RUN_TEST(test_unicard_err_codes_fw026_zero);
+    RUN_TEST(test_unicard_mount_eject_rev2_ok);
 
     int result = UNITY_END();
 

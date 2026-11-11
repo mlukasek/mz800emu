@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - ejecting a drive (mount command with an empty path) reports success, also when the drive was already empty. Firmware 0.26 reports an error although it ejects the disk.
+
 	- Unicard UC API rev 2 (api_rev2) - on an error, status byte 2 carries an error code as in MZPico: 1 unknown command, 2 bad parameter, 3 parameter buffer overflow, 4 no open file (or the file is not open for writing), 6 FatFS error (FRESULT in status byte 3). The error code and the FRESULT describe only the last operation. Firmware 0.26 keeps 0 there, as on the card.
 
 	- Unicard - new configuration option api_rev2 (section [UNICARD] of the ini, only with firmware uc3): emulates the extension UC API rev 2 of the Unicard mk3b and MZ-UniPi (specification in docs/api.md of the Unicard Manager 3.0). The first part is the command INFO 95h (16 bytes: extension revision 2, board, feature bits). Firmware 0.26 without the option does not know INFO, as on the real card.
