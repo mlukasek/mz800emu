@@ -678,6 +678,32 @@ static void do_cmdSTAT ( en_UNIMGR_CMDSTATE cmd_phase ) {
 }
 
 
+/**
+ * cmdRTCSETD / cmdRTCSETT (uc3) - nastaví hodiny karty.
+ *
+ * Vstup BBB: den, měsíc, rok-1980 / hodina, minuta, sekunda.
+ * Hodiny karty jdou v emulaci jako čas hostitele s posunem.
+ * Firmware 0.26 hodnoty nekontroluje a vždy hlásí OK (RTC_SetDate a
+ * RTC_SetTime bez kontroly, rok před 2000 přeteče); emulace neplatné
+ * hodnoty nenastaví a hlásí také OK.
+ */
+static void do_cmdRTCSET ( void ) {
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    uint8_t *b = g_unimgr.buf_byte;
+    int res;
+    if ( g_unimgr.cmd == cmdRTCSETD ) {
+        res = unicard_set_rtc_date ( b[0], b[1], (uint16_t) ( 1980 + b[2] ) );
+    } else {
+        res = unicard_set_rtc_time ( b[0], b[1], b[2] );
+    };
+    if ( res != 0 ) {
+        fprintf ( stderr, "WARNING: Unicard %s: invalid value %u %u %u ignored\n",
+                  ( g_unimgr.cmd == cmdRTCSETD ) ? "RTCSETD" : "RTCSETT", b[0], b[1], b[2] );
+    };
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
 static void do_cmdRESET ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
@@ -1123,6 +1149,17 @@ static void unimgr_write_CMD ( uint8_t data ) {
             g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
+        case cmdRTCSETD:
+        case cmdRTCSETT:
+            if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
+                g_unimgr.param_format = "BBB";
+                unimgr_input_params ( UNIMGR_CMDSTATE_START, 0 );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+            };
+            break;
+
         /* uc3-only příkazy: protokolově akceptujeme (CMD_OK, žádný
          * error status), ale tiše ignorujeme + console warning.
          * Klient ne-MZ závislý kód nezhroutí, ale ztratí očekávanou
@@ -1220,6 +1257,11 @@ static void unimgr_write_param ( uint8_t data ) {
 
         case cmdUTIME:
             do_cmdUTIME ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdRTCSETD:
+        case cmdRTCSETT:
+            do_cmdRTCSET ( );
             break;
 
         default:

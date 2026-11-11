@@ -215,6 +215,11 @@ extern "C" {
         /* Který FDC řadič spravuje Unicard API (en_UNICARD_MANAGED_FDC).
          * Default FDC0. Typ int kvůli cfgelement INT bind. */
         int managed_fdc;
+
+        /* Hodiny karty = místní čas hostitele + rtc_offset (sekundy).
+         * Nastavuje cmdRTCSETD/cmdRTCSETT (uc3), platí do konce běhu
+         * emulátoru. */
+        gint64 rtc_offset;
     } st_UNICARD;
 
     extern st_UNICARD g_unicard;
@@ -441,6 +446,25 @@ extern "C" {
     extern uint8_t unicard_read_byte ( uint16_t port );
 
     extern void unicard_read_rtc ( st_UNICARD_RTC *rtc );
+
+    /**
+     * @brief Nastaví datum hodin karty (čas běží dál).
+     *
+     * Rozsah jako RTC STM32 karty: roky 2000-2099.
+     *
+     * @return 0, nebo -1 pro neplatné datum (hodiny se nezmění)
+     */
+    extern int unicard_set_rtc_date ( uint8_t day, uint8_t month, uint16_t year );
+
+    /**
+     * @brief Nastaví čas hodin karty (datum zůstane).
+     *
+     * @return 0, nebo -1 pro neplatný čas (hodiny se nezmění)
+     */
+    extern int unicard_set_rtc_time ( uint8_t hour, uint8_t min, uint8_t sec );
+
+    /** @brief Hodiny karty zase podle hostitele (rtc_offset = 0). */
+    extern void unicard_rtc_reset ( void );
 
     extern FRESULT unicard_chdir ( char *dirpath );
     extern int unicard_get_cwd ( FRESULT *ff_res, char *buff, int buff_size );
