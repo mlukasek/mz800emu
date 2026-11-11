@@ -304,6 +304,7 @@ typedef struct st_UNIMGR {
 
     uint8_t sts_pos; // pozice ukazatele cteni statusu
     en_UNIMGR_STS sts_err; // pokud je true, tak budeme ve statusu reportovat ERROR
+    uint8_t err_code; // UC API rev 2: chybový kód (UC_ERR_*) poslední operace
 
     uint8_t *buf; // ukazatel I/O bufferu pro parametry a vystup z prikazu
     uint8_t buf_count; // pocet zbyvajicich bajtu
@@ -333,6 +334,34 @@ st_UNIMGR g_unimgr;
  *
  * Vraci pocet parametru, ktere zbyva nacist, nebo -1 pri preteceni bufferu. 
  */
+/**
+ * UC API rev 2: začátek operace (zápis příkazu, přístup na data).
+ *
+ * Chybový kód a FRESULT popisují jen poslední operaci: nulují se na jejím
+ * začátku. fw 0.26 FRESULT drží z poslední operace FatFS (beze změny).
+ */
+static void unimgr_op_start ( void ) {
+    g_unimgr.err_code = UC_ERR_NONE;
+    if ( unicard_get_api_rev2 ( ) ) g_unimgr.ff_res = FR_OK;
+}
+
+
+/** Je otevřený soubor? Když ne, chybový kód NO_FILE (hlásí jen rev 2). */
+static int unimgr_need_file ( void ) {
+    if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) return 1;
+    g_unimgr.err_code = UC_ERR_NO_FILE;
+    return 0;
+}
+
+
+/** UC API rev 2: chybový kód poslední operace (stav bajt 2 při ERROR). */
+static uint8_t unimgr_err_code ( void ) {
+    if ( g_unimgr.err_code != UC_ERR_NONE ) return g_unimgr.err_code;
+    if ( g_unimgr.ff_res != FR_OK ) return UC_ERR_FATFS;
+    return UC_ERR_NONE;
+}
+
+
 int8_t unimgr_input_params ( en_UNIMGR_CMDSTATE phase, uint8_t data ) {
 
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_PARAMRQ;
@@ -407,7 +436,7 @@ static void unimgr_serialize_dword_le ( uint8_t *dst, uint32_t value ) {
 static void do_cmdTELL ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
 
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) {
+    if ( !unimgr_need_file ( ) ) {
         return; /* sts_err zůstává ERROR */
     };
 
@@ -429,7 +458,7 @@ static void do_cmdTELL ( void ) {
 static void do_cmdSIZE ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
 
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) {
+    if ( !unimgr_need_file ( ) ) {
         return;
     };
 
@@ -470,7 +499,7 @@ static void do_cmdGETFREE ( void ) {
  */
 static void do_cmdSYNC ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) return;
+    if ( !unimgr_need_file ( ) ) return;
     g_unimgr.ff_res = unicard_file_sync ( &g_unimgr.file );
     if ( FR_OK != g_unimgr.ff_res ) return;
     g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -485,7 +514,7 @@ static void do_cmdSYNC ( void ) {
  */
 static void do_cmdTRUNC ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) return;
+    if ( !unimgr_need_file ( ) ) return;
     g_unimgr.ff_res = unicard_file_truncate ( &g_unimgr.file );
     if ( FR_OK != g_unimgr.ff_res ) return;
     g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -619,7 +648,7 @@ static void do_cmdSEEK ( en_UNIMGR_CMDSTATE cmd_phase ) {
     /* PARAMOK - 5 bajtů v buf_byte: [mode][offset_lo..offset_hi] */
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
 
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) {
+    if ( !unimgr_need_file ( ) ) {
         return;
     };
 
@@ -860,6 +889,10 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
  */
 static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    if ( dev_id > 7 ) {
+        g_unimgr.err_code = UC_ERR_BAD_PARAM;
+        return;
+    };
     g_unimgr.ff_res = unicard_mount_cfg_set ( dev_id, path );
     if ( FR_OK != g_unimgr.ff_res ) return; /* sts_err zůstává ERROR */
 
@@ -978,6 +1011,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
 
     g_unimgr.cmd = data;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    unimgr_op_start ( );
 
     st_UNICARD_RTC rtc;
 
@@ -1225,6 +1259,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
 
         default:
             fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n", __func__, __LINE__, g_unimgr.cmd );
+            g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
     };
 }
 
@@ -1236,6 +1271,7 @@ static void unimgr_write_param ( uint8_t data ) {
     if ( -1 == params_left ) {
         // preteceni bufferu
         g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+        g_unimgr.err_code = UC_ERR_OVERFLOW;
         return;
     }
 
@@ -1305,14 +1341,18 @@ static void unimgr_write_param ( uint8_t data ) {
 
 static void unimgr_write_DATA ( uint8_t data ) {
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    unimgr_op_start ( );
     if ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) {
         unimgr_write_param ( data );
         return;
     };
 
     /* cmdINTPUTC - putchar do otevřeného souboru pokud je v módu zápis. */
-    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) return;
-    if ( !( g_unimgr.file_mode & FA_WRITE ) ) return;
+    if ( !unimgr_need_file ( ) ) return;
+    if ( !( g_unimgr.file_mode & FA_WRITE ) ) {
+        g_unimgr.err_code = UC_ERR_NO_FILE; /* soubor není pro zápis */
+        return;
+    };
 
     g_unimgr.cmd = cmdINTPUTC;
     uint32_t written = 0;
@@ -1383,6 +1423,7 @@ static uint8_t unimgr_read_DATA ( void ) {
 
     g_unimgr.sts_pos = 0x00;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    unimgr_op_start ( );
 
     uint8_t ret = 0x00;
 
@@ -1448,6 +1489,9 @@ static uint8_t unimgr_read_DATA ( void ) {
             // EOF - neni co cist
             //*io_data = 0x00;
         };
+    } else {
+        /* Není co číst: žádný výstup, adresář ani soubor. */
+        g_unimgr.err_code = UC_ERR_NO_FILE;
     };
 
     return ret;
@@ -1490,7 +1534,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
 
         case 2: /* err code, ani data k predani ci vyzvednuti ? */
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) {
-                ret = 0x00; // err code unikarty - dopsat! ;)
+                /* fw 0.26: vždy 0. UC API rev 2: chybový kód podle MZPico. */
+                ret = unicard_get_api_rev2 ( ) ? unimgr_err_code ( ) : 0x00;
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
                 ret = g_unimgr.buf_count; // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti
             } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) ) {
