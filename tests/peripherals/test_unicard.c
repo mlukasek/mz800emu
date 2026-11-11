@@ -3325,6 +3325,10 @@ void test_unicard_getconfig_status_rev2(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "LINK=1|"), "LINK");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "DHCP=1|"), "DHCP");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=mz800emu v"), "VERSION");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=OFF|"), "bez TIMEZONE NTP=OFF");
+    write_unicard_cfg("network.cfg", "TIMEZONE=CET-1CEST,M3.5.0,M10.5.0/3\n");
+    uc_getconfig("STATUS", out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=KEPT|"), "s TIMEZONE: hodiny emulace nastavené (KEPT)");
 }
 
 
