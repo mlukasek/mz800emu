@@ -3282,6 +3282,11 @@ void test_unicard_setconfig_errors(void)
     uc_send_str("/f.bin");
     uc_setconfig("NETWORK", "IPADDR", "1.2.3.4");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "otevřený soubor = 5");
+    uc_send_cmd(cmdGETCONFIG);
+    uc_send_str("NETWORK");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "GETCONFIG s otevřeným souborem = 5");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READ, uc_master_status() & (UNICARD_STS_READ | UNICARD_STS_READDIR),
+                                    "soubor zůstal otevřený, proud neběží");
     uc_close();
 
     unicard_set_api_rev2(0);
