@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - neplatné datum nebo čas hodin karty (např. 31. února, rok před 2000) se odmítne chybou (kód 2, neplatný parametr). Firmware 0.26 hlásí úspěch.
+
 	- Unicard UC API rev 2 (api_rev2) - vysunutí jednotky (připojení s prázdnou cestou) hlásí úspěch, i když už jednotka prázdná byla. Firmware 0.26 hlásí chybu, přestože disk vysune.
 
 	- Unicard UC API rev 2 (api_rev2) - při chybě nese stav bajt 2 chybový kód jako v MZPico: 1 neznámý příkaz, 2 neplatný parametr, 3 přetečení bufferu parametrů, 4 není otevřený soubor (nebo není otevřený pro zápis), 6 chyba FatFS (FRESULT ve stavu bajt 3). Chybový kód i FRESULT popisují jen poslední operaci. Firmware 0.26 tam má dál 0 jako karta.
