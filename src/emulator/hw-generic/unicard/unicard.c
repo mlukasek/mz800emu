@@ -42,6 +42,7 @@
 
 #include "ff_result.h"
 #include "unicard.h"
+#include "unicard_ini.h"
 #include "unimgr.h"
 #include "MGR_V24_MZF.h"
 #include "MGR800_V211B_MZF.h"
@@ -2571,6 +2572,106 @@ FRESULT unicard_mount_cfg_set ( uint8_t dev_id, const char *card_path ) {
         if ( !g_file_set_contents ( cfg, card_path, strlen ( card_path ), NULL ) ) res = FR_DISK_ERR;
     };
     g_free ( cfg );
+    g_free ( dir );
+    return res;
+}
+
+
+/* GETCONFIG/SETCONFIG: konfigurační soubor sekce ({SD}/unicard/) a sekce
+ * řádků před první hlavičkou, nebo NULL pro neznámou sekci. */
+static const char* unicard_config_file ( const char *section, const char **initial ) {
+    *initial = NULL;
+    if ( 0 == strcmp ( section, "NETWORK" ) ) {
+        *initial = "NETWORK";   /* firmware čte network.cfg od začátku jako NETWORK */
+        return "network.cfg";
+    };
+    if ( ( 0 == strcmp ( section, "MZ" ) ) || ( 0 == strcmp ( section, "MZ800" ) ) ||
+         ( 0 == strcmp ( section, "MZ700" ) ) || ( 0 == strcmp ( section, "MZ1500" ) ) ) {
+        return "unicard.cfg";
+    };
+    return NULL;
+}
+
+
+/* Poslední hodnota klíče (firmware bere poslední výskyt), nebo def. */
+static const char* unicard_config_value ( GPtrArray *recs, const char *key, const char *def ) {
+    for ( guint i = 0; i < recs->len; i++ ) {
+        const char *r = g_ptr_array_index ( recs, i );
+        if ( 0 == strcmp ( r, key ) ) def = r + UNICARD_INI_KEY_SIZE;
+    };
+    return def;
+}
+
+
+static void unicard_config_add ( GPtrArray *recs, const char *key, const char *value ) {
+    char *rec = g_malloc0 ( UNICARD_INI_REC_SIZE );
+    g_strlcpy ( rec, key, UNICARD_INI_KEY_SIZE );
+    g_strlcpy ( rec + UNICARD_INI_KEY_SIZE, value, UNICARD_INI_VALUE_SIZE );
+    g_ptr_array_add ( recs, rec );
+}
+
+
+GPtrArray* unicard_config_get ( const char *section ) {
+    GPtrArray *recs = g_ptr_array_new_with_free_func ( g_free );
+    int status = ( 0 == strcmp ( section, "STATUS" ) );
+    const char *sec = status ? "NETWORK" : section;
+    const char *initial;
+    const char *name = unicard_config_file ( sec, &initial );
+    if ( !name ) return recs;
+
+    char *path = g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, name, NULL );
+    char *data = NULL;
+    gsize len = 0;
+    if ( g_file_get_contents ( path, &data, &len, NULL ) ) {
+        unicard_ini_read_section ( data, len, sec, initial, recs );
+        g_free ( data );
+    };
+    g_free ( path );
+    if ( !status ) return recs;
+
+    /* STATUS: skutečný stav sítě. Emulace síť nemá: jako použité hlásí
+     * nastavené adresy (bez nich výchozí jako firmware mk3b, main.c) a
+     * LINK 1. */
+    GPtrArray *st = g_ptr_array_new_with_free_func ( g_free );
+    unicard_config_add ( st, "IPADDR", unicard_config_value ( recs, "IPADDR", "192.168.1.10" ) );
+    unicard_config_add ( st, "NETMASK", unicard_config_value ( recs, "NETMASK", "255.255.255.0" ) );
+    unicard_config_add ( st, "GATEWAY", unicard_config_value ( recs, "GATEWAY", "192.168.1.20" ) );
+    unicard_config_add ( st, "DNSADDR", unicard_config_value ( recs, "DNSADDR", "0.0.0.0" ) );
+    unicard_config_add ( st, "DNSADDR2", unicard_config_value ( recs, "DNSADDR2", "0.0.0.0" ) );
+    unicard_config_add ( st, "HWADDR", unicard_config_value ( recs, "HWADDR", "00:1C:EE:00:00:01" ) );
+    unicard_config_add ( st, "LINK", "1" );
+    unicard_config_add ( st, "DHCP", ( 0 == strcmp ( unicard_config_value ( recs, "DHCP", "0" ), "1" ) ) ? "1" : "0" );
+    char version[32];
+    snprintf ( version, sizeof ( version ), "mz800emu v%d.%d", UNICARD_FW_UC3_MAJOR, UNICARD_FW_UC3_MINOR );
+    unicard_config_add ( st, "VERSION", version );
+    g_ptr_array_free ( recs, TRUE );
+    return st;
+}
+
+
+FRESULT unicard_config_set ( const char *section, const char *key, const char *value ) {
+    const char *initial;
+    const char *name = unicard_config_file ( section, &initial );
+    if ( !name ) return FR_INVALID_PARAMETER;
+    if ( unicard_test_readonly ( ) ) {
+        unicard_warn_readonly_blocked ( );
+        return FR_WRITE_PROTECTED;
+    };
+    char *dir = g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, NULL );
+    if ( !g_file_test ( dir, G_FILE_TEST_IS_DIR ) ) g_mkdir ( dir, 0755 );
+    char *path = g_build_filename ( dir, name, NULL );
+    char *data = NULL;
+    gsize len = 0;
+    if ( !g_file_get_contents ( path, &data, &len, NULL ) ) {
+        data = NULL;
+        len = 0;
+    };
+    gsize nlen = 0;
+    char *nd = unicard_ini_set ( data ? data : "", len, section, initial, key, value, &nlen );
+    FRESULT res = g_file_set_contents ( path, nd, (gssize) nlen, NULL ) ? FR_OK : FR_DISK_ERR;
+    g_free ( nd );
+    g_free ( data );
+    g_free ( path );
     g_free ( dir );
     return res;
 }

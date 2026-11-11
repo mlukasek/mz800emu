@@ -245,6 +245,7 @@
 #include "libs/sharpmz_ascii/sharpmz_ascii.h"
 #include "unimgr_commands.h"
 #include "unicard.h"
+#include "unicard_ini.h"
 #include "unimgr.h"
 
 #ifdef UNICARD_EMULATED
@@ -320,6 +321,13 @@ typedef struct st_UNIMGR {
 
     st_UNICARD_DIR dir; // dirhandle pro READDIR a FILELIST
     en_READDIR_MODE readdir_mode;
+
+    /* GETCONFIG (UC API rev 2): proud záznamů jako READDIR (stav bit 2). */
+    GPtrArray *cfg_recs; // záznamy (UNICARD_INI_REC_SIZE), NULL = proud není
+    guint cfg_idx; // další záznam
+    uint8_t cfg_rec[UNICARD_INI_REC_SIZE]; // právě čtený záznam
+    uint8_t *cfg_ptr;
+    uint8_t cfg_count; // zbývající bajty záznamu
 } st_UNIMGR;
 
 st_UNIMGR g_unimgr;
@@ -343,6 +351,33 @@ st_UNIMGR g_unimgr;
 static void unimgr_op_start ( void ) {
     g_unimgr.err_code = UC_ERR_NONE;
     if ( unicard_get_api_rev2 ( ) ) g_unimgr.ff_res = FR_OK;
+}
+
+
+/** GETCONFIG: běží proud záznamů? */
+static int unimgr_cfg_active ( void ) {
+    return ( g_unimgr.cfg_recs != NULL );
+}
+
+
+/** GETCONFIG: ukončí proud záznamů. */
+static void unimgr_cfg_close ( void ) {
+    if ( g_unimgr.cfg_recs ) g_ptr_array_free ( g_unimgr.cfg_recs, TRUE );
+    g_unimgr.cfg_recs = NULL;
+    g_unimgr.cfg_count = 0;
+}
+
+
+/** GETCONFIG: další záznam, nebo konec proudu. */
+static void unimgr_cfg_next ( void ) {
+    if ( !g_unimgr.cfg_recs || ( g_unimgr.cfg_idx >= g_unimgr.cfg_recs->len ) ) {
+        unimgr_cfg_close ( );
+        return;
+    };
+    memcpy ( g_unimgr.cfg_rec, g_ptr_array_index ( g_unimgr.cfg_recs, g_unimgr.cfg_idx ), UNICARD_INI_REC_SIZE );
+    g_unimgr.cfg_idx++;
+    g_unimgr.cfg_ptr = g_unimgr.cfg_rec;
+    g_unimgr.cfg_count = UNICARD_INI_REC_SIZE;
 }
 
 
@@ -409,6 +444,7 @@ static void do_cmdCLOSE ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     unicard_file_close ( &g_unimgr.file );
     unicard_dir_close ( &g_unimgr.dir );
+    unimgr_cfg_close ( );
     g_unimgr.sts_err = UNIMGR_STS_OK;
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
 }
@@ -740,7 +776,73 @@ static void do_cmdRTCSET ( void ) {
 
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
-#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY )
+#define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY | \
+                               UC_INFO_CONFIG )
+
+/**
+ * cmdGETCONFIG (UC API rev 2) - záznamy sekce konfigurace karty.
+ *
+ * Vstup S: sekce. Výstup: proud záznamů 80 B (klíč 16 + hodnota 64) jako
+ * READDIR, dokud běží, svítí stav bit 2. Neznámá sekce nebo chybějící soubor
+ * = prázdný proud. Otevřený adresář se zavře, soubor zůstane.
+ */
+static void do_cmdGETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        unicard_dir_close ( &g_unimgr.dir );
+        unimgr_cfg_close ( );
+        g_unimgr.param_format = "S";
+        unimgr_input_params ( cmd_phase, 0 );
+        return;
+    };
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    char *section = g_ascii_strup ( (char*) g_unimgr.buf_byte, -1 );
+    g_unimgr.cfg_recs = unicard_config_get ( section );
+    g_free ( section );
+    g_unimgr.cfg_idx = 0;
+    unimgr_cfg_next ( );
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
+/**
+ * cmdSETCONFIG (UC API rev 2) - nastaví klíč konfigurace karty.
+ *
+ * Vstup SSS: sekce, klíč, hodnota (prázdná klíč smaže). Sekce a klíč se
+ * převedou na velká písmena jako ve firmwaru. Chyby: 2 prázdná sekce nebo
+ * klíč, ']' v sekci, '=' v klíči, neznámá sekce nebo STATUS; 5 otevřený
+ * soubor; 6 zápis.
+ */
+static void do_cmdSETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        g_unimgr.param_format = "SSS";
+        unimgr_input_params ( cmd_phase, 0 );
+        return;
+    };
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    const char *sec = (char*) g_unimgr.buf_byte;
+    const char *key = sec + strlen ( sec ) + 1;
+    const char *val = key + strlen ( key ) + 1;
+    if ( ( sec[0] == 0x00 ) || ( key[0] == 0x00 ) || strchr ( sec, ']' ) || strchr ( key, '=' ) ) {
+        g_unimgr.err_code = UC_ERR_BAD_PARAM;
+        return;
+    };
+    if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) {
+        g_unimgr.err_code = UC_ERR_BUSY;
+        return;
+    };
+    char *usec = g_ascii_strup ( sec, -1 );
+    char *ukey = g_ascii_strup ( key, -1 );
+    g_unimgr.ff_res = unicard_config_set ( usec, ukey, val );
+    g_free ( usec );
+    g_free ( ukey );
+    if ( FR_INVALID_PARAMETER == g_unimgr.ff_res ) {
+        g_unimgr.ff_res = FR_OK;
+        g_unimgr.err_code = UC_ERR_BAD_PARAM;
+        return;
+    };
+    if ( FR_OK != g_unimgr.ff_res ) return;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
 
 /**
  * cmdCOPY (UC API rev 2) - zkopíruje soubor, cíl přepíše.
@@ -819,6 +921,7 @@ static void do_cmdRESET ( void ) {
     g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
     unicard_file_close ( &g_unimgr.file );
     unicard_dir_close ( &g_unimgr.dir );
+    unimgr_cfg_close ( );
     unicard_chdir ( "/" );
     g_unimgr.ff_res = FR_OK;
     g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -917,6 +1020,7 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
     if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
         unicard_file_close ( &g_unimgr.file );
         unicard_dir_close ( &g_unimgr.dir );
+        unimgr_cfg_close ( );
         g_unimgr.param_format = "BS";
         unimgr_input_params ( cmd_phase, 0 );
         return;
@@ -1034,6 +1138,7 @@ static void do_cmdFDDMOUNT ( en_UNIMGR_CMDSTATE cmd_phase ) {
 void unimgr_exit ( void ) {
     unicard_file_close ( &g_unimgr.file );
     unicard_dir_close ( &g_unimgr.dir );
+    unimgr_cfg_close ( );
 }
 
 
@@ -1047,6 +1152,7 @@ void unimgr_reset ( void ) {
 int unimgr_init ( void ) {
     unicard_file_init ( &g_unimgr.file );
     unicard_dir_init ( &g_unimgr.dir );
+    unimgr_cfg_close ( );
     // cmdRESET
     g_unimgr.cmd = cmdRESET;
     g_unimgr.sts_pos = 0x00;
@@ -1271,6 +1377,21 @@ static void unimgr_write_CMD ( uint8_t data ) {
             g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
+        case cmdGETCONFIG:
+        case cmdSETCONFIG:
+            if ( unicard_get_api_rev2 ( ) ) {
+                if ( g_unimgr.cmd == cmdGETCONFIG ) {
+                    do_cmdGETCONFIG ( UNIMGR_CMDSTATE_START );
+                } else {
+                    do_cmdSETCONFIG ( UNIMGR_CMDSTATE_START );
+                };
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+                g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
+            };
+            break;
+
         case cmdCOPY:
             if ( unicard_get_api_rev2 ( ) ) {
                 do_cmdCOPY ( UNIMGR_CMDSTATE_START );
@@ -1422,6 +1543,14 @@ static void unimgr_write_param ( uint8_t data ) {
             do_cmdCOPY ( UNIMGR_CMDSTATE_PARAMOK );
             break;
 
+        case cmdGETCONFIG:
+            do_cmdGETCONFIG ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdSETCONFIG:
+            do_cmdSETCONFIG ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
         default:
             fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n", __func__, __LINE__, g_unimgr.cmd );
     };
@@ -1542,6 +1671,14 @@ static uint8_t unimgr_read_DATA ( void ) {
                 fprintf ( stderr, "%s():%d - Not implemented command 0x%02x\n", __func__, __LINE__, g_unimgr.cmd );
         };
 
+    } else if ( unimgr_cfg_active ( ) ) {
+
+        // GETCONFIG: čtení záznamů konfigurace (binárně, bez převodu)
+        ret = *g_unimgr.cfg_ptr++;
+        g_unimgr.cfg_count--;
+        if ( !g_unimgr.cfg_count ) unimgr_cfg_next ( );
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+
     } else if ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) {
 
         // cteni polozek adresare
@@ -1600,6 +1737,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
             if ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) ret |= 0x02; // 1. bit - CMD_OUTPUT=1
 
             if ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) ret |= 0x04; // 2. bit - READDIR_DATA=1
+            if ( unimgr_cfg_active ( ) ) ret |= 0x04; // 2. bit i pro proud GETCONFIG
 
             if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) {
                 if ( g_unimgr.file_mode & FA_READ ) ret |= 0x08; // 3. bit - FA_READ=1
@@ -1629,6 +1767,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
                 // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti (MOUNTS může mít přes 255 B)
                 ret = ( g_unimgr.buf_count > 0xff ) ? 0xff : (uint8_t) g_unimgr.buf_count;
+            } else if ( unimgr_cfg_active ( ) ) {
+                ret = g_unimgr.cfg_count; // zbytek záznamu GETCONFIG
             } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) ) {
                 ret = g_unimgr.filebuf_count; // zbyvajici miste ve filebufferu
             };

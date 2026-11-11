@@ -19,6 +19,7 @@
 
 #include "hw-generic/unicard/unicard.h"
 #include "hw-generic/unicard/unicard_sfn.h"
+#include "hw-generic/unicard/unicard_ini.h"
 #include "hw-generic/unicard/unimgr_commands.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
@@ -3154,6 +3155,143 @@ void test_unicard_copy_absent_in_fw026(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: GETCONFIG 92h, SETCONFIG 99h
+ * ================================================================ */
+
+/* Záznamy GETCONFIG sekce jako "KLÍČ=hodnota|..." (čte, dokud svítí bit 2). */
+static int uc_getconfig(const char *section, char *out, size_t cap)
+{
+    uc_send_cmd(cmdGETCONFIG);
+    uc_send_str(section);
+    out[0] = '\0';
+    int n = 0;
+    while (uc_master_status() & UNICARD_STS_READDIR) {
+        char rec[UNICARD_INI_REC_SIZE];
+        for (int i = 0; i < UNICARD_INI_REC_SIZE; i++) rec[i] = (char)uc_recv_data();
+        rec[UNICARD_INI_KEY_SIZE - 1] = '\0';
+        rec[UNICARD_INI_REC_SIZE - 1] = '\0';
+        g_strlcat(out, rec, cap);
+        g_strlcat(out, "=", cap);
+        g_strlcat(out, rec + UNICARD_INI_KEY_SIZE, cap);
+        g_strlcat(out, "|", cap);
+        n++;
+    }
+    return n;
+}
+
+static void uc_setconfig(const char *section, const char *key, const char *value)
+{
+    uc_send_cmd(cmdSETCONFIG);
+    uc_send_str(section);
+    uc_send_str(key);
+    uc_send_str(value);
+}
+
+static void write_unicard_cfg(const char *name, const char *content)
+{
+    char *full = g_build_filename(s_test_sd_root, UNICARD_UNIMGR_DIR, name, NULL);
+    g_file_set_contents(full, content, -1, NULL);
+    g_free(full);
+}
+
+
+/* GETCONFIG čte sekce jako firmware: network.cfg i bez hlavičky, unicard.cfg
+ * po sekcích; neznámá sekce = prázdný proud. */
+void test_unicard_getconfig_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    write_unicard_cfg("network.cfg", "; net\r\nIPADDR = 10.0.0.5 ; static\r\nFTP_NAME=mz\r\n");
+    write_unicard_cfg("unicard.cfg", "[MZ]\nVGA=1\n[MZ800]\nborder = 3\n");
+    char out[1024];
+    uc_send_cmd(cmdRESET);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, uc_getconfig("network", out, sizeof(out)), "2 záznamy NETWORK");
+    TEST_ASSERT_EQUAL_STRING("IPADDR=10.0.0.5|FTP_NAME=mz|", out);
+    uc_getconfig("MZ800", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("BORDER=3|", out);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, uc_getconfig("NOTHING", out, sizeof(out)), "neznámá sekce = prázdný proud");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "prázdný proud bez chyby");
+}
+
+
+/* STATUS: použité adresy (z network.cfg, jinak výchozí firmwaru), LINK, DHCP. */
+void test_unicard_getconfig_status_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    write_unicard_cfg("network.cfg", "IPADDR=10.0.0.5\nDHCP=1\n");
+    char out[1024];
+    uc_send_cmd(cmdRESET);
+    uc_getconfig("STATUS", out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "IPADDR=10.0.0.5|"), "IP z network.cfg");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NETMASK=255.255.255.0|"), "výchozí maska firmwaru");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "LINK=1|"), "LINK");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "DHCP=1|"), "DHCP");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=mz800emu v"), "VERSION");
+}
+
+
+/* SETCONFIG přepíše, přidá a smaže klíč; GETCONFIG to hned vidí. */
+void test_unicard_setconfig_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    write_unicard_cfg("network.cfg", "; net\nIPADDR=10.0.0.5\nNETMASK=255.0.0.0\n");
+    char out[1024];
+    uc_send_cmd(cmdRESET);
+    uc_setconfig("NETWORK", "ipaddr", "10.0.0.6");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "SETCONFIG = OK");
+    uc_setconfig("NETWORK", "NETMASK", "");
+    uc_setconfig("NETWORK", "DHCP", "1");
+    uc_getconfig("NETWORK", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("IPADDR=10.0.0.6|DHCP=1|", out);
+    char *full = g_build_filename(s_test_sd_root, UNICARD_UNIMGR_DIR, "network.cfg", NULL);
+    char *data = NULL;
+    g_file_get_contents(full, &data, NULL, NULL);
+    g_free(full);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("; net\nIPADDR=10.0.0.6\nDHCP=1\n", data, "komentář zůstal");
+    g_free(data);
+
+    uc_setconfig("MZ800", "BORDER", "2");           /* unicard.cfg ani sekce nejsou */
+    uc_getconfig("MZ800", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("BORDER=2|", out);
+}
+
+
+/* Chyby SETCONFIG: 2 prázdný klíč, STATUS, neznámá sekce; 5 otevřený soubor;
+ * fw 0.26 příkazy nezná. */
+void test_unicard_setconfig_errors(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+    uc_setconfig("NETWORK", "", "x");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, uc_read_status_byte(2), "prázdný klíč = 2");
+    uc_setconfig("STATUS", "IPADDR", "1.2.3.4");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, uc_read_status_byte(2), "STATUS jen ke čtení = 2");
+    uc_setconfig("WHATEVER", "A", "1");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, uc_read_status_byte(2), "neznámá sekce = 2");
+    create_test_file("f.bin", 1);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/f.bin");
+    uc_setconfig("NETWORK", "IPADDR", "1.2.3.4");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "otevřený soubor = 5");
+    uc_close();
+
+    unicard_set_api_rev2(0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdGETCONFIG);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & (UNICARD_STS_ERROR | UNICARD_STS_BUSY),
+                                    "fw 0.26: GETCONFIG = ERROR");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3280,6 +3418,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_copy_rev2);
     RUN_TEST(test_unicard_copy_errors_rev2);
     RUN_TEST(test_unicard_copy_absent_in_fw026);
+
+    /* UC API rev 2: GETCONFIG, SETCONFIG. */
+    RUN_TEST(test_unicard_getconfig_rev2);
+    RUN_TEST(test_unicard_getconfig_status_rev2);
+    RUN_TEST(test_unicard_setconfig_rev2);
+    RUN_TEST(test_unicard_setconfig_errors);
 
     int result = UNITY_END();
 
