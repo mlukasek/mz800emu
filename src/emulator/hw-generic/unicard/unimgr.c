@@ -714,7 +714,7 @@ static void do_cmdSTAT ( en_UNIMGR_CMDSTATE cmd_phase ) {
  * Hodiny karty jdou v emulaci jako čas hostitele s posunem.
  * Firmware 0.26 hodnoty nekontroluje a vždy hlásí OK (RTC_SetDate a
  * RTC_SetTime bez kontroly, rok před 2000 přeteče); emulace neplatné
- * hodnoty nenastaví a hlásí také OK.
+ * hodnoty nenastaví a hlásí také OK. UC API rev 2: chyba 2 (BAD_PARAM).
  */
 static void do_cmdRTCSET ( void ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
@@ -728,6 +728,11 @@ static void do_cmdRTCSET ( void ) {
     if ( res != 0 ) {
         fprintf ( stderr, "WARNING: Unicard %s: invalid value %u %u %u ignored\n",
                   ( g_unimgr.cmd == cmdRTCSETD ) ? "RTCSETD" : "RTCSETT", b[0], b[1], b[2] );
+        /* UC API rev 2 (Q14): neplatné datum nebo čas = chyba BAD_PARAM. */
+        if ( unicard_get_api_rev2 ( ) ) {
+            g_unimgr.err_code = UC_ERR_BAD_PARAM;
+            return;
+        };
     };
     g_unimgr.sts_err = UNIMGR_STS_OK;
 }

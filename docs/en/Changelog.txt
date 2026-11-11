@@ -1,3 +1,5 @@
+	- Unicard UC API rev 2 (api_rev2) - an invalid date or time for the card's clock (e.g. 31 February, a year before 2000) is refused with an error (code 2, bad parameter). Firmware 0.26 reports success.
+
 	- Unicard UC API rev 2 (api_rev2) - ejecting a drive (mount command with an empty path) reports success, also when the drive was already empty. Firmware 0.26 reports an error although it ejects the disk.
 
 	- Unicard UC API rev 2 (api_rev2) - on an error, status byte 2 carries an error code as in MZPico: 1 unknown command, 2 bad parameter, 3 parameter buffer overflow, 4 no open file (or the file is not open for writing), 6 FatFS error (FRESULT in status byte 3). The error code and the FRESULT describe only the last operation. Firmware 0.26 keeps 0 there, as on the card.

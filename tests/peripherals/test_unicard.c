@@ -2983,6 +2983,30 @@ void test_unicard_mount_eject_rev2_ok(void)
 }
 
 
+/* rev 2 (Q14): neplatné datum nebo čas = ERROR 2, hodiny se nezmění; platné
+ * datum OK. */
+void test_unicard_rtc_invalid_rev2_error(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    uc_rtc_set(cmdRTCSETD, 1, 2, 2030 - 1980);
+    uint8_t ok = uc_master_status() & UNICARD_STS_ERROR;
+    uc_rtc_set(cmdRTCSETD, 31, 2, 2031 - 1980);
+    uint8_t err_date = uc_master_status() & UNICARD_STS_ERROR;
+    uint8_t code_date = uc_read_status_byte(2);
+    uc_rtc_set(cmdRTCSETT, 12, 60, 0);
+    uint8_t err_time = uc_master_status() & UNICARD_STS_ERROR;
+    uint8_t d[3];
+    uc_rtc_get(cmdRTCGETD, d);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, ok, "platné datum = OK");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, err_date, "neplatné datum = ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, code_date, "neplatné datum = 2");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, err_time, "neplatný čas = ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d[0], "datum se nezmění");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3098,6 +3122,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_err_codes_rev2);
     RUN_TEST(test_unicard_err_codes_fw026_zero);
     RUN_TEST(test_unicard_mount_eject_rev2_ok);
+    RUN_TEST(test_unicard_rtc_invalid_rev2_error);
 
     int result = UNITY_END();
 
