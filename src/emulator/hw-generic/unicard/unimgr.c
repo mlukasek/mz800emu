@@ -791,7 +791,7 @@ static void do_cmdRTCSET ( void ) {
 #define UNIMGR_CLOUD_OPEN   2       // stažení do UNIMGR_CLOUD_CACHE, pak se otevře
 #define UNIMGR_CLOUD_COPY   3
 #define UNIMGR_CLOUD_WAIT   3
-#define UNIMGR_CLOUD_CHUNK  4096
+#define UNIMGR_CLOUD_CHUNK  1024
 #define UNIMGR_CLOUD_CACHE  "/unicard/cloud.tmp"
 
 static struct {

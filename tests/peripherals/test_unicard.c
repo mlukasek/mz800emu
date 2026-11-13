@@ -3370,13 +3370,18 @@ void test_unicard_cloud_open_rev2(void)
     uc_send_str("cloud:/featured/big.mzf");
     uint8_t last = 0, rising = 1;
     int polls = 0;
-    while ((uc_master_status() & UNICARD_STS_PROGRESS) && (polls < 100)) {
-        uint8_t pct = uc_read_status_byte(2);
+    for (;;) {
+        /* bajty 0-2 jedním čtením: průběh platí, jen když bajt 0 ještě hlásí bit 6 */
+        unicard_write_byte(UNICARD_PORT_CMD, cmdSTSR);
+        uint8_t b0 = unicard_read_byte(UNICARD_PORT_CMD);
+        (void) unicard_read_byte(UNICARD_PORT_CMD);
+        uint8_t pct = unicard_read_byte(UNICARD_PORT_CMD);
+        if (!(b0 & UNICARD_STS_PROGRESS) || (polls >= 1000)) break;
         if (pct < last) rising = 0;
         last = pct;
         polls++;
     }
-    TEST_ASSERT_TRUE_MESSAGE(polls >= 2, "stahování po kusech (kus na každé čtení stavu, tady dvě za smyčku)");
+    TEST_ASSERT_TRUE_MESSAGE(polls >= 10, "stahování po kusech (1 KB na čtení stavu)");
     TEST_ASSERT_TRUE_MESSAGE(rising && (last > 50), "průběh v bajtu 2 roste");
     uint8_t sts = uc_master_status();
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READ, sts & (UNICARD_STS_READ | UNICARD_STS_ERROR | UNICARD_STS_PROGRESS),
