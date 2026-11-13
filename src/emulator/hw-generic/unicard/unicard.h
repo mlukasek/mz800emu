@@ -761,6 +761,37 @@ extern "C" {
     extern uint8_t unicard_copy_percent ( void );
 
     /**
+     * @brief Svazek cloud: (UC API rev 2, jako MZPico a firmware mk3b 0.31).
+     *
+     * Emulátor místo api.mzpico.com čte složku hostitele z proměnné prostředí
+     * MZ800EMU_UNICARD_CLOUD (bez ní cloud není). "cloud:/a/b" = <složka>/a/b.
+     *
+     * @return složka cloudu, nebo NULL
+     */
+    extern const char* unicard_cloud_root ( void );
+
+    /** @brief Začíná cesta "cloud:"? */
+    extern int unicard_cloud_is_path ( const char *path );
+
+    /**
+     * @brief Výpis složky cloudu jako text FILELIST ("jméno[/]" 0Dh "velikost"
+     *        0Dh), složky napřed, abecedně. Neexistující složka = prázdný výpis
+     *        (jako api.mzpico.com).
+     *
+     * @return délka textu, -1 = nevejde se do max
+     */
+    extern int unicard_cloud_list ( const char *path, char *out, size_t max );
+
+    /**
+     * @brief Stažení souboru z cloudu do dst_path (cesta na kartě) na pozadí,
+     *        stejně jako unicard_copy_start (kroky unicard_copy_step).
+     *
+     * @return FR_OK běží; FR_NO_FILE soubor v cloudu není; jinak jako
+     *         unicard_copy_start
+     */
+    extern FRESULT unicard_cloud_copy_start ( const char *cloud_path, const char *dst_path );
+
+    /**
      * @brief Záznamy sekce konfigurace karty (GETCONFIG 92h, UC API rev 2).
      *
      * Sekce (velkými písmeny): NETWORK ({SD}/unicard/network.cfg), MZ, MZ800,

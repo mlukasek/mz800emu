@@ -777,7 +777,39 @@ static void do_cmdRTCSET ( void ) {
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
 #define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY | \
-                               UC_INFO_CONFIG | UC_INFO_RESTART )
+                               UC_INFO_CONFIG | UC_INFO_RESTART | UC_INFO_CLOUD )
+
+
+/*
+ * Svazek cloud: (UC API rev 2, jako firmware mk3b 0.31 a MZPico). FILELIST/READDIR, OPEN a COPY s cestou
+ * "cloud:/..." běží na pozadí (stav bit 6, bajt 2 průběh stahování). Emulátor bere soubory ze složky hostitele
+ * (unicard_cloud_root): výpis je hotový po UNIMGR_CLOUD_WAIT čteních stavu (jako dotaz na server), stahuje se
+ * po UNIMGR_CLOUD_CHUNK B na čtení stavu, ať manažer vidí průběh. Mezitím STORNO a RESET pozadavek zruší,
+ * ostatní příkazy a data chyba 5. Chyba cloudu: kód 7 a CLOUD_ERR_* v bajtu 3.
+ */
+#define UNIMGR_CLOUD_DIR    1
+#define UNIMGR_CLOUD_OPEN   2       // stažení do UNIMGR_CLOUD_CACHE, pak se otevře
+#define UNIMGR_CLOUD_COPY   3
+#define UNIMGR_CLOUD_WAIT   3
+#define UNIMGR_CLOUD_CHUNK  4096
+#define UNIMGR_CLOUD_CACHE  "/unicard/cloud.tmp"
+
+static struct {
+    uint8_t op; // UNIMGR_CLOUD_*, běží
+    uint8_t wait; // čtení stavu do výsledku
+    int err; // CLOUD_ERR_* výsledku, 0 = OK
+    uint8_t dir; // proud záznamů výpisu (stav bit 2)
+    uint8_t mode; // režim OPEN
+    uint16_t len, pos;
+    char list[8192];
+} s_cloud;
+
+
+static int unimgr_cloud_on ( void ) {
+    return unicard_get_api_rev2 ( ) && ( NULL != unicard_cloud_root ( ) );
+}
+
+static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t op );
 
 /**
  * cmdGETCONFIG (UC API rev 2) - záznamy sekce konfigurace karty.
@@ -877,6 +909,14 @@ static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
         g_unimgr.err_code = UC_ERR_BUSY;
         return;
     };
+    if ( unimgr_cloud_on ( ) && unicard_cloud_is_path ( dst ) ) { // cloud je jen ke čtení
+        g_unimgr.ff_res = FR_WRITE_PROTECTED;
+        return;
+    };
+    if ( unimgr_cloud_on ( ) && unicard_cloud_is_path ( src ) ) { // stažení rovnou do cíle, na pozadí
+        unimgr_cloud_start_get ( src, dst, UNIMGR_CLOUD_COPY );
+        return;
+    };
     g_unimgr.ff_res = unicard_copy_start ( src, dst );
     if ( FR_OK != g_unimgr.ff_res ) return;
     g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -952,6 +992,7 @@ static void do_cmdINFO ( void ) {
     memset ( g_unimgr.buf_byte, 0x00, 16 );
     g_unimgr.buf_byte[0] = 2;
     g_unimgr.buf_byte[1] = UC_INFO_BOARD_MK3B;
+    if ( unimgr_cloud_on ( ) ) g_unimgr.buf_byte[3] |= 0x01; // cloud (MZPico: Wi-Fi a cloud)
     g_unimgr.buf_byte[8] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS & 0xff );
     g_unimgr.buf_byte[9] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS >> 8 );
     g_unimgr.buf = g_unimgr.buf_byte;
@@ -961,7 +1002,155 @@ static void do_cmdINFO ( void ) {
 }
 
 
+static void unimgr_cloud_error ( int err ) {
+    g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    g_unimgr.err_code = UC_ERR_CLOUD;
+    g_unimgr.ff_res = (FRESULT) err;
+}
+
+
+static void unimgr_cloud_wait ( uint8_t op, int err, uint8_t wait ) {
+    s_cloud.op = op;
+    s_cloud.err = err;
+    s_cloud.wait = wait;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
+static void unimgr_cloud_start_dir ( const char *path ) {
+    if ( !unimgr_cloud_on ( ) ) {
+        unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
+        return;
+    };
+    int n = unicard_cloud_list ( path, s_cloud.list, sizeof ( s_cloud.list ) );
+    s_cloud.len = ( n < 0 ) ? 0 : (uint16_t) n;
+    unimgr_cloud_wait ( UNIMGR_CLOUD_DIR, ( n < 0 ) ? CLOUD_ERR_TOO_LARGE : 0, UNIMGR_CLOUD_WAIT );
+}
+
+
+static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t op ) {
+    if ( !unimgr_cloud_on ( ) ) {
+        unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
+        return;
+    };
+    FRESULT r = unicard_cloud_copy_start ( src, dst );
+    if ( FR_NO_FILE == r ) { // server: 404 po dotazu
+        unimgr_cloud_wait ( op, CLOUD_ERR_FAILED, UNIMGR_CLOUD_WAIT );
+        return;
+    };
+    g_unimgr.ff_res = r;
+    if ( FR_OK != r ) return;
+    unimgr_cloud_wait ( op, 0, 0 );
+}
+
+
+/* Další záznam výpisu do filebuf; na konci proud končí (stav bit 2). */
+static void unimgr_cloud_dir_next ( void ) {
+    const char *name = &s_cloud.list[s_cloud.pos];
+    uint16_t e = s_cloud.pos;
+    int n = 0;
+    g_unimgr.cmd = ( READDIR_MODE_FILELIST == g_unimgr.readdir_mode ) ? cmdFILELIST : cmdREADDIR;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+    while ( ( e < s_cloud.len ) && ( n < 2 ) ) if ( 0x0d == s_cloud.list[e++] ) n++;
+    if ( n < 2 ) {
+        s_cloud.dir = 0;
+        g_unimgr.filebuf_count = 0;
+        return;
+    };
+    if ( READDIR_MODE_FILELIST == g_unimgr.readdir_mode ) {
+        g_unimgr.filebuf = (uint8_t*) name;
+        g_unimgr.filebuf_count = (uint8_t) ( ( e - s_cloud.pos > 255 ) ? 255 : e - s_cloud.pos );
+    } else {
+        uint8_t *p = g_unimgr.filebuf_byte;
+        int nl = 0;
+        while ( name[nl] != 0x0d ) nl++;
+        uint32_t size = (uint32_t) strtoul ( &name[nl + 1], NULL, 10 );
+        memset ( p, 0x00, 23 + _MAX_LFN );
+        p[0] = (uint8_t) ( size & 0xff );
+        p[1] = (uint8_t) ( ( size >> 8 ) & 0xff );
+        p[2] = (uint8_t) ( ( size >> 16 ) & 0xff );
+        p[3] = (uint8_t) ( ( size >> 24 ) & 0xff );
+        if ( nl && ( '/' == name[nl - 1] ) ) {
+            p[8] = 0x10; // AM_DIR
+            nl--;
+        } else {
+            p[8] = 0x20; // AM_ARC
+        };
+        memcpy ( &p[9], name, ( nl > 12 ) ? 12 : nl ); // 8.3: začátek jména
+        if ( nl > _MAX_LFN - 1 ) nl = _MAX_LFN - 1;
+        p[22] = (uint8_t) nl;
+        memcpy ( &p[23], name, nl );
+        g_unimgr.filebuf = p;
+        g_unimgr.filebuf_count = 23 + _MAX_LFN;
+    };
+    s_cloud.pos = e;
+    s_cloud.dir = 1;
+}
+
+
+/* Při čtení stavu: čekání na výpis, další kus stahování, výsledek. */
+static void unimgr_cloud_poll ( void ) {
+    if ( s_cloud.wait && --s_cloud.wait ) return;
+    if ( !s_cloud.err && ( ( UNIMGR_CLOUD_OPEN == s_cloud.op ) || ( UNIMGR_CLOUD_COPY == s_cloud.op ) ) ) {
+        FRESULT res;
+        if ( unicard_copy_step ( UNIMGR_CLOUD_CHUNK, &res ) ) return;
+        if ( FR_OK != res ) {
+            s_cloud.op = 0;
+            g_unimgr.err_code = UC_ERR_NONE;
+            g_unimgr.ff_res = res;
+            g_unimgr.sts_err = UNIMGR_STS_ERROR;
+            return;
+        };
+    };
+    uint8_t op = s_cloud.op;
+    s_cloud.op = 0;
+    if ( s_cloud.err ) {
+        unimgr_cloud_error ( s_cloud.err );
+        return;
+    };
+    if ( UNIMGR_CLOUD_DIR == op ) {
+        s_cloud.pos = 0;
+        unimgr_cloud_dir_next ( );
+        return;
+    };
+    g_unimgr.err_code = UC_ERR_NONE;
+    if ( UNIMGR_CLOUD_COPY == op ) {
+        g_unimgr.cmd = cmdCOPY;
+        g_unimgr.ff_res = FR_OK;
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+        return;
+    };
+    g_unimgr.cmd = cmdOPEN;
+    g_unimgr.file_mode = s_cloud.mode;
+    g_unimgr.ff_res = unicard_file_open ( &g_unimgr.file, UNIMGR_CLOUD_CACHE, ( g_unimgr.file_mode & 0xdf ) );
+    g_unimgr.sts_err = ( FR_OK == g_unimgr.ff_res ) ? UNIMGR_STS_OK : UNIMGR_STS_ERROR;
+}
+
+
+static void unimgr_cloud_cancel ( void ) {
+    if ( ( UNIMGR_CLOUD_OPEN == s_cloud.op ) || ( UNIMGR_CLOUD_COPY == s_cloud.op ) ) unicard_copy_cancel ( );
+    s_cloud.op = 0;
+    s_cloud.wait = 0;
+}
+
+
+/* Cloud na pozadí: příkaz nebo data mezitím. 1 = odmítnuto (chyba 5); STORNO a RESET požadavek zruší. */
+static int unimgr_cloud_busy ( int is_cmd, uint8_t data ) {
+    if ( !s_cloud.op ) return 0;
+    if ( is_cmd && ( ( cmdSTORNO == data ) || ( cmdRESET == data ) ) ) {
+        unimgr_cloud_cancel ( );
+        return 0;
+    };
+    g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    g_unimgr.err_code = UC_ERR_BUSY;
+    g_unimgr.ff_res = FR_OK;
+    return 1;
+}
+
+
 static void do_cmdRESET ( void ) {
+    unimgr_cloud_cancel ( );
+    s_cloud.dir = 0;
     unicard_copy_cancel ( );
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
@@ -1002,6 +1191,11 @@ static void do_cmdREADDIR ( en_UNIMGR_CMDSTATE cmd_phase ) {
         return;
     } else if ( UNIMGR_CMDSTATE_PARAMOK == cmd_phase ) {
         g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+        s_cloud.dir = 0;
+        if ( unicard_get_api_rev2 ( ) && unicard_cloud_is_path ( (char*) g_unimgr.buf_byte ) ) {
+            unimgr_cloud_start_dir ( (char*) g_unimgr.buf_byte );
+            return;
+        };
         g_unimgr.ff_res = unicard_dir_open ( &g_unimgr.dir, (char*) g_unimgr.buf_byte );
         if ( FR_OK != g_unimgr.ff_res ) return;
     };
@@ -1067,6 +1261,7 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
         unicard_file_close ( &g_unimgr.file );
         unicard_dir_close ( &g_unimgr.dir );
         unimgr_cfg_close ( );
+        s_cloud.dir = 0;
         g_unimgr.param_format = "BS";
         unimgr_input_params ( cmd_phase, 0 );
         return;
@@ -1076,6 +1271,16 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     g_unimgr.buf = g_unimgr.buf_byte + 1;
     g_unimgr.file_mode = g_unimgr.buf_byte[0];
+    if ( unicard_get_api_rev2 ( ) && unicard_cloud_is_path ( (char*) g_unimgr.buf ) ) {
+        if ( g_unimgr.file_mode & FA_WRITE ) { // cloud je jen ke čtení
+            g_unimgr.ff_res = FR_WRITE_PROTECTED;
+            return;
+        };
+        s_cloud.mode = ( g_unimgr.file_mode & FA_UNIMGR_ASCII_CNV ) | FA_READ;
+        unicard_mkdir ( "/unicard" ); // (už je-li, chyba nevadí)
+        unimgr_cloud_start_get ( (char*) g_unimgr.buf, UNIMGR_CLOUD_CACHE, UNIMGR_CLOUD_OPEN );
+        return;
+    };
     g_unimgr.ff_res = unicard_file_open ( &g_unimgr.file, (char*) g_unimgr.buf, ( g_unimgr.file_mode & 0xdf ) );
     if ( FR_OK != g_unimgr.ff_res ) return;
     g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -1227,6 +1432,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
         return;
     };
 
+    if ( unimgr_cloud_busy ( 1, data ) ) return;
     if ( unimgr_copy_busy ( 1, data ) ) return;
 
     g_unimgr.cmd = data;
@@ -1465,6 +1671,18 @@ static void unimgr_write_CMD ( uint8_t data ) {
             };
             break;
 
+        case cmdLISTVOL:
+            if ( unicard_get_api_rev2 ( ) ) {
+                strcpy ( (char*) g_unimgr.buf_byte, unimgr_cloud_on ( ) ? "sd:\rcloud:\r" : "sd:\r" );
+                g_unimgr.buf = g_unimgr.buf_byte;
+                g_unimgr.buf_count = (uint16_t) strlen ( (char*) g_unimgr.buf_byte );
+                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+                g_unimgr.sts_err = UNIMGR_STS_OK;
+            } else {
+                g_unimgr.err_code = UC_ERR_NOT_IMPLEMENTED;
+            };
+            break;
+
         case cmdMOUNTS:
             if ( unicard_get_api_rev2 ( ) ) {
                 do_cmdMOUNTS ( );
@@ -1621,6 +1839,7 @@ static void unimgr_write_param ( uint8_t data ) {
 
 
 static void unimgr_write_DATA ( uint8_t data ) {
+    if ( unimgr_cloud_busy ( 0, data ) ) return;
     if ( unimgr_copy_busy ( 0, data ) ) return;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
     unimgr_op_start ( );
@@ -1704,6 +1923,7 @@ static inline uint8_t unimgr_output_data_bin ( void ) {
 static uint8_t unimgr_read_DATA ( void ) {
 
     g_unimgr.sts_pos = 0x00;
+    if ( unimgr_cloud_busy ( 0, 0 ) ) return 0x00; /* cloud na pozadí: data až po něm */
     if ( unimgr_copy_busy ( 0, 0 ) ) return 0x00; /* COPY na pozadí: data až po ní */
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
     unimgr_op_start ( );
@@ -1717,6 +1937,7 @@ static uint8_t unimgr_read_DATA ( void ) {
 
             case cmdREV:
             case cmdGETCWD:
+            case cmdLISTVOL:
                 ret = unimgr_output_data_txt ( );
                 break;
 
@@ -1743,6 +1964,19 @@ static uint8_t unimgr_read_DATA ( void ) {
         g_unimgr.cfg_count--;
         if ( !g_unimgr.cfg_count ) unimgr_cfg_next ( );
         g_unimgr.sts_err = UNIMGR_STS_OK;
+
+    } else if ( s_cloud.dir ) {
+
+        // čtení záznamů výpisu cloudu
+        uint8_t ret_val = g_unimgr.filebuf [0];
+        if ( ( g_unimgr.cnv_cmd == UNIMGR_ASCII_CNV_ON ) && ( g_unimgr.readdir_mode == READDIR_MODE_FILELIST ) ) {
+            ret_val = sharpmz_cnv_to ( ret_val );
+        };
+        ret = ret_val;
+        g_unimgr.filebuf++;
+        g_unimgr.filebuf_count--;
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+        if ( !g_unimgr.filebuf_count ) unimgr_cloud_dir_next ( );
 
     } else if ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) {
 
@@ -1797,7 +2031,11 @@ static uint8_t unimgr_read_STATUS ( void ) {
     switch ( g_unimgr.sts_pos ) {
 
         case 0:
-            if ( unicard_copy_active ( ) ) unimgr_copy_poll ( );
+            if ( s_cloud.op ) {
+                unimgr_cloud_poll ( );
+            } else if ( unicard_copy_active ( ) ) {
+                unimgr_copy_poll ( );
+            };
 
             if ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ret |= 0x01; // 0. bit - BUSY(paramRQ)=1
 
@@ -1805,6 +2043,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
 
             if ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) ret |= 0x04; // 2. bit - READDIR_DATA=1
             if ( unimgr_cfg_active ( ) ) ret |= 0x04; // 2. bit i pro proud GETCONFIG
+            if ( s_cloud.dir ) ret |= 0x04; // a pro výpis cloudu
 
             if ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) {
                 if ( g_unimgr.file_mode & FA_READ ) ret |= 0x08; // 3. bit - FA_READ=1
@@ -1816,7 +2055,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
                 if ( EXIT_SUCCESS == unicard_file_is_eof ( &g_unimgr.file ) ) ret |= 0x20; // 5. bit - EOF=1
             };
 
-            if ( unicard_copy_active ( ) ) ret |= 0x40; // 6. bit - IN_PROGRESS (COPY na pozadí)
+            if ( unicard_copy_active ( ) || s_cloud.op ) ret |= 0x40; // 6. bit - IN_PROGRESS (COPY, cloud)
 
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) ret |= 0x80; // 7. bit - ERROR=1
 
@@ -1831,6 +2070,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) {
                 /* fw 0.26: vždy 0. UC API rev 2: chybový kód podle MZPico. */
                 ret = unicard_get_api_rev2 ( ) ? unimgr_err_code ( ) : 0x00;
+            } else if ( s_cloud.op ) {
+                ret = unicard_copy_active ( ) ? unicard_copy_percent ( ) : 0; // průběh stahování z cloudu
             } else if ( unicard_copy_active ( ) ) {
                 ret = unicard_copy_percent ( ); // průběh COPY na pozadí
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
@@ -1838,7 +2079,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
                 ret = ( g_unimgr.buf_count > 0xff ) ? 0xff : (uint8_t) g_unimgr.buf_count;
             } else if ( unimgr_cfg_active ( ) ) {
                 ret = g_unimgr.cfg_count; // zbytek záznamu GETCONFIG
-            } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) ) {
+            } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) || s_cloud.dir ) {
                 ret = g_unimgr.filebuf_count; // zbyvajici miste ve filebufferu
             };
             break;

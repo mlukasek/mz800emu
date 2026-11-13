@@ -3233,6 +3233,259 @@ void test_unicard_copy_background_cancel_rev2(void)
 }
 
 
+/* ================================================================
+ * UC API rev 2: svazek cloud: (složka hostitele MZ800EMU_UNICARD_CLOUD)
+ * ================================================================ */
+
+static char *s_cloud_root = NULL;
+
+/* Soubor v cloudu se vzorkem create_test_file (bajt i = i & 0xff). */
+static void cloud_file(const char *rel, size_t size)
+{
+    char *full = g_build_filename(s_cloud_root, rel, NULL);
+    FILE *f = g_fopen(full, "wb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, "soubor v cloudu");
+    for (size_t i = 0; i < size; i++) {
+        uint8_t b = (uint8_t)(i & 0xff);
+        fwrite(&b, 1, 1, f);
+    }
+    fclose(f);
+    g_free(full);
+}
+
+/* Cloud: featured/{Game.mzf 428 B, B.mzf 3 B, big.mzf 20000 B}, tools/ (prázdná), top.txt 5 B. */
+static void cloud_setup(void)
+{
+    s_cloud_root = g_dir_make_tmp("mztest-cloud-XXXXXX", NULL);
+    TEST_ASSERT_NOT_NULL_MESSAGE(s_cloud_root, "složka cloudu");
+    char *d = g_build_filename(s_cloud_root, "featured", NULL);
+    g_mkdir(d, 0755);
+    g_free(d);
+    d = g_build_filename(s_cloud_root, "tools", NULL);
+    g_mkdir(d, 0755);
+    g_free(d);
+    cloud_file("featured/Game.mzf", 428);
+    cloud_file("featured/B.mzf", 3);
+    cloud_file("featured/big.mzf", 20000);
+    cloud_file("top.txt", 5);
+    g_setenv("MZ800EMU_UNICARD_CLOUD", s_cloud_root, TRUE);
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+}
+
+static void cloud_teardown(void)
+{
+    g_unsetenv("MZ800EMU_UNICARD_CLOUD");
+    if (s_cloud_root) {
+        rmtree(s_cloud_root);
+        g_free(s_cloud_root);
+        s_cloud_root = NULL;
+    }
+}
+
+/* Čte stav, dokud běží požadavek na pozadí (bit 6). */
+static uint8_t cloud_wait(int *polls)
+{
+    uint8_t s;
+    int i = 0;
+    do {
+        s = uc_master_status();
+        i++;
+    } while ((s & UNICARD_STS_PROGRESS) && (i < 1000));
+    if (polls) *polls = i;
+    return s;
+}
+
+/* FILELIST cloudu (počká na výpis). */
+static size_t cloud_filelist(const char *path, char *out, size_t cap)
+{
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str(path);
+    cloud_wait(NULL);
+    size_t n = 0;
+    while ((n < cap - 1) && (uc_master_status() & UNICARD_STS_READDIR)) {
+        out[n++] = (char)uc_recv_data();
+    }
+    out[n] = '\0';
+    return n;
+}
+
+
+/* FILELIST a READDIR cloudu: na pozadí, pak záznamy (složky napřed); neexistující složka = prázdný výpis. */
+void test_unicard_cloud_list_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    cloud_setup();
+
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str("cloud:/");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_PROGRESS, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR |
+                                   UNICARD_STS_READDIR), "výpis na pozadí: bit 6, bez záznamů");
+    int polls;
+    uint8_t sts = cloud_wait(&polls);
+    TEST_ASSERT_TRUE_MESSAGE(polls >= 2, "výpis trvá několik čtení stavu");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READDIR, sts & (UNICARD_STS_READDIR | UNICARD_STS_ERROR), "záznamy");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(cmdFILELIST, uc_read_status_byte(1), "bajt 1 = FILELIST");
+    char out[1024];
+    size_t n = 0;
+    while ((n < sizeof(out) - 1) && (uc_master_status() & UNICARD_STS_READDIR)) out[n++] = (char)uc_recv_data();
+    out[n] = 0;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("featured/\r0\rtools/\r0\rtop.txt\r5\r", out, "kořen cloudu");
+
+    cloud_filelist("cloud:/featured", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("B.mzf\r3\rbig.mzf\r20000\rGame.mzf\r428\r", out, "složka, abecedně");
+    cloud_filelist("cloud:/none", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", out, "neexistující složka = prázdný výpis");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "bez chyby");
+    cloud_filelist("cloud:/../x", out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", out, "'..' ven z cloudu nevede");
+
+    uc_send_cmd(cmdREADDIR);
+    uc_send_str("cloud:/featured");
+    cloud_wait(NULL);
+    uint32_t size;
+    uint8_t attr;
+    char name[64];
+    TEST_ASSERT_TRUE_MESSAGE(uc_read_dir_filinfo(&size, &attr, name, sizeof(name)), "READDIR záznam");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("B.mzf", name, "jméno");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, size, "velikost");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x20, attr, "soubor");
+    TEST_ASSERT_TRUE_MESSAGE(uc_read_dir_filinfo(&size, &attr, name, sizeof(name)), "druhý");
+    TEST_ASSERT_TRUE_MESSAGE(uc_read_dir_filinfo(&size, &attr, name, sizeof(name)), "třetí");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Game.mzf", name, "třetí jméno");
+    TEST_ASSERT_FALSE_MESSAGE(uc_read_dir_filinfo(&size, &attr, name, sizeof(name)), "konec");
+
+    cloud_teardown();
+}
+
+
+/* OPEN z cloudu: stažení na pozadí s průběhem, pak čtení jako obyčejný soubor; zápis a chybějící soubor. */
+void test_unicard_cloud_open_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    cloud_setup();
+
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("cloud:/featured/big.mzf");
+    uint8_t last = 0, rising = 1;
+    int polls = 0;
+    while ((uc_master_status() & UNICARD_STS_PROGRESS) && (polls < 100)) {
+        uint8_t pct = uc_read_status_byte(2);
+        if (pct < last) rising = 0;
+        last = pct;
+        polls++;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(polls >= 2, "stahování po kusech (kus na každé čtení stavu, tady dvě za smyčku)");
+    TEST_ASSERT_TRUE_MESSAGE(rising && (last > 50), "průběh v bajtu 2 roste");
+    uint8_t sts = uc_master_status();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_READ, sts & (UNICARD_STS_READ | UNICARD_STS_ERROR | UNICARD_STS_PROGRESS),
+                                   "soubor otevřený pro čtení");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(cmdOPEN, uc_read_status_byte(1), "bajt 1 = OPEN");
+    int ok = 1;
+    for (int i = 0; i < 20000; i++) if (uc_recv_data() != (uint8_t)(i & 0xff)) ok = 0;
+    TEST_ASSERT_TRUE_MESSAGE(ok, "obsah stejný");
+    uc_close();
+    TEST_ASSERT_TRUE_MESSAGE(test_file_pattern_ok("unicard/cloud.tmp", 20000), "kopie v /unicard/cloud.tmp");
+
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x0a); /* FA_WRITE | FA_CREATE_ALWAYS */
+    uc_send_str("cloud:/featured/Game.mzf");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_FATFS, uc_read_status_byte(2), "zápis do cloudu = 6");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_WRITE_PROTECTED, uc_read_status_byte(3), "FR_WRITE_PROTECTED");
+
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);
+    uc_send_str("cloud:/featured/none.mzf");
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_PROGRESS, "dotaz na server");
+    sts = cloud_wait(NULL);
+    TEST_ASSERT_TRUE_MESSAGE(sts & UNICARD_STS_ERROR, "chybějící soubor = chyba");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_CLOUD, uc_read_status_byte(2), "kód 7 CLOUD");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(CLOUD_ERR_FAILED, uc_read_status_byte(3), "CLOUD_ERR_FAILED (404)");
+
+    cloud_teardown();
+}
+
+
+/* COPY z cloudu na SD na pozadí; do cloudu ne; během stahování BUSY, STORNO a RESET zruší. */
+void test_unicard_cloud_copy_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    cloud_setup();
+
+    uc_copy("cloud:/featured/big.mzf", "/big.mzf");
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_PROGRESS, "COPY z cloudu na pozadí");
+    uc_send_cmd(cmdINFO);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "INFO během stahování = 5");
+    uc_send_data(0x55);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BUSY, uc_read_status_byte(2), "data během stahování = 5");
+    uint8_t sts = cloud_wait(NULL);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR, "COPY OK");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(cmdCOPY, uc_read_status_byte(1), "bajt 1 = COPY");
+    TEST_ASSERT_TRUE_MESSAGE(test_file_pattern_ok("big.mzf", 20000), "kopie celá");
+
+    uc_copy("/big.mzf", "cloud:/x.mzf");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_WRITE_PROTECTED, uc_read_status_byte(3), "do cloudu = FR_WRITE_PROTECTED");
+
+    uint8_t cancel[2] = { cmdSTORNO, cmdRESET };
+    for (int c = 0; c < 2; c++) {
+        uc_copy("cloud:/featured/big.mzf", "/part.mzf");
+        TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_PROGRESS, "stahuje");
+        TEST_ASSERT_TRUE_MESSAGE(test_file_exists("part.mzf"), "cíl rozpracovaný");
+        uc_send_cmd(cancel[c]);
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_ERROR),
+                                       c ? "RESET zrušil" : "STORNO zrušilo");
+        TEST_ASSERT_FALSE_MESSAGE(test_file_exists("part.mzf"), "nedokončený cíl smazaný");
+    }
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str("cloud:/");
+    uc_send_cmd(cmdSTORNO);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_READDIR),
+                                   "STORNO zruší i výpis");
+
+    cloud_teardown();
+}
+
+
+/* LISTVOL a INFO: cloud jen s nastavenou složkou; bez ní chyba 7 / 1. */
+void test_unicard_cloud_listvol_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    cloud_setup();
+
+    uc_send_cmd(cmdLISTVOL);
+    char out[64];
+    size_t n = 0;
+    while ((n < sizeof(out) - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) out[n++] = (char)uc_recv_data();
+    out[n] = 0;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("sd:\rcloud:\r", out, "LISTVOL s cloudem");
+    uc_send_cmd(cmdINFO);
+    uint8_t info[16];
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, info[3] & 0x01, "INFO [3] bit 0 = cloud");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, info[8] & 0x80, "INFO [8] UC_INFO_CLOUD");
+
+    g_unsetenv("MZ800EMU_UNICARD_CLOUD");
+    uc_send_cmd(cmdLISTVOL);
+    n = 0;
+    while ((n < sizeof(out) - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) out[n++] = (char)uc_recv_data();
+    out[n] = 0;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("sd:\r", out, "LISTVOL bez cloudu");
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str("cloud:/");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_CLOUD, uc_read_status_byte(2), "bez cloudu = 7");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(CLOUD_ERR_NOT_CONNECTED, uc_read_status_byte(3), "CLOUD_ERR_NOT_CONNECTED");
+
+    unicard_set_api_rev2(0);
+    g_setenv("MZ800EMU_UNICARD_CLOUD", s_cloud_root, TRUE);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdLISTVOL);
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "fw 0.26 LISTVOL nezná");
+
+    cloud_teardown();
+}
+
+
 /* fw 0.26 COPY nezná. */
 void test_unicard_copy_absent_in_fw026(void)
 {
@@ -3555,6 +3808,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_copy_background_busy_rev2);
     RUN_TEST(test_unicard_copy_background_cancel_rev2);
     RUN_TEST(test_unicard_copy_absent_in_fw026);
+
+    /* UC API rev 2: svazek cloud:, LISTVOL 90h. */
+    RUN_TEST(test_unicard_cloud_list_rev2);
+    RUN_TEST(test_unicard_cloud_open_rev2);
+    RUN_TEST(test_unicard_cloud_copy_rev2);
+    RUN_TEST(test_unicard_cloud_listvol_rev2);
 
     /* UC API rev 2: GETCONFIG, SETCONFIG. */
     RUN_TEST(test_unicard_getconfig_rev2);

@@ -435,6 +435,7 @@ extern "C" {
 #define cmdMOUNTS       0x98    // text: "j:cesta" 0Dh pro jednotky 1 2 3 4 R Q E S (0-7)
 #define cmdCOPY         0x9A    // str zdroj, str cíl: kopie souboru, cíl přepíše
 #define cmdRESTART      0x9B    // restart firmwaru karty (počítač ne), repozitář jako po zapnutí
+#define cmdLISTVOL      0x90    // svazky jako MZPico: "sd:" 0Dh, s cloudem i "cloud:" 0Dh
 
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
@@ -444,6 +445,7 @@ extern "C" {
 #define UC_INFO_LFN         0x0010  // dlouhé jméno ve FILINFO
 #define UC_INFO_EJECT_OK    0x0020  // MOUNT s prázdnou cestou hlásí OK
 #define UC_INFO_RESTART     0x0040  // RESTART 9Bh
+#define UC_INFO_CLOUD       0x0080  // svazek cloud: (FILELIST, READDIR, OPEN, COPY), LISTVOL 90h
 
 #define UC_INFO_BOARD_MK3B  0x01    // INFO [1]: Unicard mk3b
 
@@ -456,6 +458,15 @@ extern "C" {
 #define UC_ERR_NO_FILE          4   // není otevřený soubor (nebo není pro zápis)
 #define UC_ERR_BUSY             5   // operace na pozadí, otevřený soubor
 #define UC_ERR_FATFS            6   // chyba FatFS, FRESULT ve stavu bajt 3
+#define UC_ERR_CLOUD            7   // chyba cloudu, CLOUD_ERR_* ve stavu bajt 3 (jako MZPico)
+
+/* CLOUD_ERR_* (stav bajt 3 při chybě 7), kódy MZPico. */
+#define CLOUD_ERR_NOT_CONNECTED 1   // bez sítě (emulátor: bez MZ800EMU_UNICARD_CLOUD)
+#define CLOUD_ERR_TIMEOUT       2
+#define CLOUD_ERR_FAILED        3   // server neodpověděl 200 (soubor není)
+#define CLOUD_ERR_TOO_LARGE     4   // výpis se nevejde
+#define CLOUD_ERR_BUSY          5
+#define CLOUD_ERR_INVALID       7
 
 
 // Interni prikazy - provadi se jinak, nez pres CMD port:
