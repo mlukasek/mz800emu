@@ -2736,14 +2736,21 @@ int unicard_copy_step ( size_t max, FRESULT *res ) {
 }
 
 
+/* Začátek kopie z hostitelské cesty src do dst (obě se uvolní). */
+static FRESULT unicard_copy_begin ( char *src, char *dst );
+
+
 FRESULT unicard_copy_start ( const char *src_path, const char *dst_path ) {
     unicard_copy_cancel ( );
     if ( unicard_test_readonly ( ) ) {
         unicard_warn_readonly_blocked ( );
         return FR_WRITE_PROTECTED;
     };
-    char *src = unicard_jail_resolve ( src_path );
-    char *dst = unicard_jail_resolve ( dst_path );
+    return unicard_copy_begin ( unicard_jail_resolve ( src_path ), unicard_jail_resolve ( dst_path ) );
+}
+
+
+static FRESULT unicard_copy_begin ( char *src, char *dst ) {
     FRESULT res = FR_OK;
     if ( !src || !dst ) {
         res = FR_NO_PATH;
@@ -2778,6 +2785,90 @@ FRESULT unicard_copy_start ( const char *src_path, const char *dst_path ) {
     if ( src ) baseui_tools_mem_free ( src );
     if ( dst ) baseui_tools_mem_free ( dst );
     return res;
+}
+
+
+/* --- Svazek cloud: (UC API rev 2), složka hostitele místo api.mzpico.com --- */
+
+const char* unicard_cloud_root ( void ) {
+    const char *r = g_getenv ( "MZ800EMU_UNICARD_CLOUD" );
+    return ( r && r[0] ) ? r : NULL;
+}
+
+
+int unicard_cloud_is_path ( const char *path ) {
+    return ( 0 == g_ascii_strncasecmp ( path, "cloud:", 6 ) );
+}
+
+
+/* Hostitelská cesta k "cloud:/a/b" (g_free), NULL = bez cloudu nebo ".." v cestě. */
+static char* unicard_cloud_resolve ( const char *path ) {
+    const char *root = unicard_cloud_root ( );
+    if ( !root ) return NULL;
+    if ( unicard_cloud_is_path ( path ) ) path += 6;
+    gchar **parts = g_strsplit ( path, "/", -1 );
+    int bad = 0;
+    for ( int i = 0; parts[i]; i++ ) if ( 0 == strcmp ( parts[i], ".." ) ) bad = 1;
+    g_strfreev ( parts );
+    if ( bad ) return NULL;
+    return g_build_filename ( root, path, NULL );
+}
+
+
+static int unicard_cloud_cmp ( gconstpointer a, gconstpointer b ) {
+    return g_ascii_strcasecmp ( *(const char * const *) a, *(const char * const *) b );
+}
+
+
+int unicard_cloud_list ( const char *path, char *out, size_t max ) {
+    char *host = unicard_cloud_resolve ( path );
+    if ( !host ) return 0;
+    GDir *d = g_dir_open ( host, 0, NULL );
+    if ( !d ) {
+        g_free ( host );
+        return 0;
+    };
+    GPtrArray *names = g_ptr_array_new_with_free_func ( g_free );
+    const char *n;
+    while ( ( n = g_dir_read_name ( d ) ) ) g_ptr_array_add ( names, g_strdup ( n ) );
+    g_dir_close ( d );
+    g_ptr_array_sort ( names, unicard_cloud_cmp );
+    size_t len = 0;
+    int full = 0;
+    for ( int pass = 0; pass < 2 && !full; pass++ ) {
+        for ( guint i = 0; i < names->len && !full; i++ ) {
+            const char *name = g_ptr_array_index ( names, i );
+            char *f = g_build_filename ( host, name, NULL );
+            GStatBuf st;
+            int is_dir = g_file_test ( f, G_FILE_TEST_IS_DIR );
+            guint64 size = ( !is_dir && ( g_stat ( f, &st ) == 0 ) ) ? (guint64) st.st_size : 0;
+            g_free ( f );
+            if ( is_dir != ( pass == 0 ) ) continue;
+            char rec[300];
+            int k = snprintf ( rec, sizeof ( rec ), "%s%s\r%" G_GUINT64_FORMAT "\r", name, is_dir ? "/" : "", size );
+            if ( ( k < 0 ) || ( len + (size_t) k > max ) ) {
+                full = 1;
+                break;
+            };
+            memcpy ( &out[len], rec, (size_t) k );
+            len += (size_t) k;
+        };
+    };
+    g_ptr_array_free ( names, TRUE );
+    g_free ( host );
+    return full ? -1 : (int) len;
+}
+
+
+FRESULT unicard_cloud_copy_start ( const char *cloud_path, const char *dst_path ) {
+    unicard_copy_cancel ( );
+    if ( unicard_test_readonly ( ) ) {
+        unicard_warn_readonly_blocked ( );
+        return FR_WRITE_PROTECTED;
+    };
+    char *src = unicard_cloud_resolve ( cloud_path );
+    if ( !src ) return FR_NO_FILE;
+    return unicard_copy_begin ( src, unicard_jail_resolve ( dst_path ) );
 }
 
 
