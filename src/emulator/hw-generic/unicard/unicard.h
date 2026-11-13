@@ -770,6 +770,9 @@ extern "C" {
      */
     extern const char* unicard_cloud_root ( void );
 
+    /** @brief Je cloud dostupný (složka MZ800EMU_UNICARD_CLOUD existuje)? Chybí-li, emulace hlásí, že není síť. */
+    extern int unicard_cloud_online ( void );
+
     /** @brief Začíná cesta "cloud:"? */
     extern int unicard_cloud_is_path ( const char *path );
 

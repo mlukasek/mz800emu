@@ -3470,7 +3470,22 @@ void test_unicard_cloud_listvol_rev2(void)
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, info[3] & 0x01, "INFO [3] bit 0 = cloud");
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, info[8] & 0x80, "INFO [8] UC_INFO_CLOUD");
 
+    /* složka cloudu chybí: karta cloud má, ale není síť */
+    char *gone = g_build_filename(s_cloud_root, "missing", NULL);
+    g_setenv("MZ800EMU_UNICARD_CLOUD", gone, TRUE);
+    g_free(gone);
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[3] & 0x01, "bez sítě: INFO [3] bit 0 = 0");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, info[8] & 0x80, "UC_INFO_CLOUD zůstává");
+    uc_send_cmd(cmdFILELIST);
+    uc_send_str("cloud:/");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(CLOUD_ERR_NOT_CONNECTED, uc_read_status_byte(3), "bez sítě = CLOUD_ERR_NOT_CONNECTED");
+
     g_unsetenv("MZ800EMU_UNICARD_CLOUD");
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[8] & 0x80, "bez MZ800EMU_UNICARD_CLOUD karta cloud nemá");
     uc_send_cmd(cmdLISTVOL);
     n = 0;
     while ((n < sizeof(out) - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) out[n++] = (char)uc_recv_data();
