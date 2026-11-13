@@ -805,8 +805,14 @@ static struct {
 } s_cloud;
 
 
+/* Karta s cloudem (UC_INFO_CLOUD): MZ800EMU_UNICARD_CLOUD nastavená. Dostupný (síť): složka existuje. */
 static int unimgr_cloud_on ( void ) {
     return unicard_get_api_rev2 ( ) && ( NULL != unicard_cloud_root ( ) );
+}
+
+
+static int unimgr_cloud_online ( void ) {
+    return unimgr_cloud_on ( ) && unicard_cloud_online ( );
 }
 
 static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t op );
@@ -992,8 +998,9 @@ static void do_cmdINFO ( void ) {
     memset ( g_unimgr.buf_byte, 0x00, 16 );
     g_unimgr.buf_byte[0] = 2;
     g_unimgr.buf_byte[1] = UC_INFO_BOARD_MK3B;
-    if ( unimgr_cloud_on ( ) ) g_unimgr.buf_byte[3] |= 0x01; // cloud (MZPico: Wi-Fi a cloud)
+    if ( unimgr_cloud_online ( ) ) g_unimgr.buf_byte[3] |= 0x01; // cloud dostupný (MZPico: Wi-Fi a cloud)
     g_unimgr.buf_byte[8] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS & 0xff );
+    if ( !unimgr_cloud_on ( ) ) g_unimgr.buf_byte[8] &= (uint8_t) ~UC_INFO_CLOUD; // karta bez cloudu
     g_unimgr.buf_byte[9] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS >> 8 );
     g_unimgr.buf = g_unimgr.buf_byte;
     g_unimgr.buf_count = 16;
@@ -1018,7 +1025,7 @@ static void unimgr_cloud_wait ( uint8_t op, int err, uint8_t wait ) {
 
 
 static void unimgr_cloud_start_dir ( const char *path ) {
-    if ( !unimgr_cloud_on ( ) ) {
+    if ( !unimgr_cloud_online ( ) ) {
         unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
         return;
     };
@@ -1029,7 +1036,7 @@ static void unimgr_cloud_start_dir ( const char *path ) {
 
 
 static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t op ) {
-    if ( !unimgr_cloud_on ( ) ) {
+    if ( !unimgr_cloud_online ( ) ) {
         unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
         return;
     };
@@ -1673,7 +1680,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
 
         case cmdLISTVOL:
             if ( unicard_get_api_rev2 ( ) ) {
-                strcpy ( (char*) g_unimgr.buf_byte, unimgr_cloud_on ( ) ? "sd:\rcloud:\r" : "sd:\r" );
+                strcpy ( (char*) g_unimgr.buf_byte, unimgr_cloud_online ( ) ? "sd:\rcloud:\r" : "sd:\r" );
                 g_unimgr.buf = g_unimgr.buf_byte;
                 g_unimgr.buf_count = (uint16_t) strlen ( (char*) g_unimgr.buf_byte );
                 g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;

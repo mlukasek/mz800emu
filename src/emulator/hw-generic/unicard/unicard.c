@@ -2796,6 +2796,12 @@ const char* unicard_cloud_root ( void ) {
 }
 
 
+int unicard_cloud_online ( void ) {
+    const char *r = unicard_cloud_root ( );
+    return r && g_file_test ( r, G_FILE_TEST_IS_DIR );
+}
+
+
 int unicard_cloud_is_path ( const char *path ) {
     return ( 0 == g_ascii_strncasecmp ( path, "cloud:", 6 ) );
 }
