@@ -2702,6 +2702,13 @@ GPtrArray* unicard_config_get ( const char *section ) {
     /* NTP (firmware 0.28): hodiny z NTP jen s TIMEZONE v network.cfg a nenastavenými hodinami (rok 2000).
      * Hodiny emulace jdou podle PC, jsou tedy nastavené: s TIMEZONE KEPT, bez něj OFF. */
     unicard_config_add ( st, "NTP", ( unicard_config_value ( recs, "TIMEZONE", "" )[0] != 0x00 ) ? "KEPT" : "OFF" );
+    /* CLOUD (firmware 0.32): the card checks its cloud server every minute: OFF (no network or no CLOUDHOST),
+     * WAIT (not checked yet), OK (it answered), FAIL. The emulation: with MZ800EMU_UNICARD_CLOUD set (a card with
+     * the cloud), OK when its folder exists, else OFF; MZ800EMU_UNICARD_CLOUD_STATE sets it (tests: WAIT, FAIL). */
+    if ( unicard_cloud_root ( ) ) {
+        const char *cs = g_getenv ( "MZ800EMU_UNICARD_CLOUD_STATE" );
+        unicard_config_add ( st, "CLOUD", ( cs && cs[0] ) ? cs : ( unicard_cloud_online ( ) ? "OK" : "OFF" ) );
+    }
     g_ptr_array_free ( recs, TRUE );
     return st;
 }
