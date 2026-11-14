@@ -9,7 +9,8 @@
  * not fit stays in the host's socket (the firmware: the TCP window, the server waits). TCPSTATUS byte 1 is the
  * state of the connection (UNICARD_TCP_*), byte 0 is 1 only while connected. A connection the server closed keeps
  * its received data readable. DNS asks the host's resolver at once (DNSRES is then RESOLVED or UNKNOWN).
- * Non-blocking sockets: the emulation never waits for the network.
+ * Non-blocking sockets: the emulation never waits for the network. TCP_NODELAY as the firmware 0.33 (no Nagle:
+ * every key goes at once).
  */
 
 #include <stdio.h>
@@ -24,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
@@ -141,6 +143,8 @@ void unicard_tcp_open ( void ) {
 #else
     fcntl ( s_tcp.sock, F_SETFL, fcntl ( s_tcp.sock, F_GETFL, 0 ) | O_NONBLOCK );
 #endif
+    int nodelay = 1;
+    setsockopt ( s_tcp.sock, IPPROTO_TCP, TCP_NODELAY, (const char *) &nodelay, sizeof ( nodelay ) );
     struct sockaddr_in a;
     memset ( &a, 0, sizeof ( a ) );
     a.sin_family = AF_INET;
