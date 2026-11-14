@@ -19,8 +19,8 @@ extern "C" {
 #define UNICARD_TCP_NONE        0   /* no connection */
 #define UNICARD_TCP_CONNECTING  1
 #define UNICARD_TCP_CONNECTED   2
-#define UNICARD_TCP_CLOSED      3   /* the server closed it */
-#define UNICARD_TCP_FAILED      4   /* refused, reset, unreachable */
+#define UNICARD_TCP_FAILED      3   /* refused, reset, unreachable (as the DPI-1 firmware) */
+#define UNICARD_TCP_CLOSED      4   /* the server closed it, its data still readable */
 
 #define UNICARD_TCP_BUF         3072 /* the received data the card keeps (>= the TCP window of the mk3b) */
 
