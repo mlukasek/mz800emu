@@ -247,6 +247,7 @@
 #include "unicard.h"
 #include "unicard_ini.h"
 #include "unimgr.h"
+#include "unicard_tcp.h"
 
 #ifdef UNICARD_EMULATED
 const char FIRMWARE_REVISION[] = "mz800emu/rev.01"; //"trunk/rev.60";
@@ -418,6 +419,15 @@ int8_t unimgr_input_params ( en_UNIMGR_CMDSTATE phase, uint8_t data ) {
             g_unimgr.buf++;
             g_unimgr.buf_count--;
             g_unimgr.param_format++;
+        } else if ( 'X' == g_unimgr.param_format[0] ) {
+            /* X (TCPSEND): the data after a WORD length (bit 15 = send now) in the first two bytes. As the
+             * firmware 0.33: 1-252 B, a longer one is an error (0.26 sent the memory after the buffer, Q9). */
+            int len = ( g_unimgr.buf_byte[0] | ( g_unimgr.buf_byte[1] << 8 ) ) & 0x7fff;
+            if ( len > PARAM_BUFFER_SIZE - 3 ) return ( -1 );
+            g_unimgr.buf[0] = data;
+            g_unimgr.buf++;
+            g_unimgr.buf_count--;
+            if ( len + 2 <= g_unimgr.buf - g_unimgr.buf_byte ) g_unimgr.param_format++;
         } else {
             if ( g_unimgr.cnv_cmd ) data = sharpmz_cnv_to ( data );
 
@@ -1155,6 +1165,79 @@ static int unimgr_cloud_busy ( int is_cmd, uint8_t data ) {
 }
 
 
+/**
+ * TCP client and DNS (firmware uc3: emu_TCP.c, emu_DNS.c; unicard_tcp.c on the host's sockets).
+ *
+ * TCPSTATUS 80h: 10 B out (connected, state (fw 0.33), WORD received, IP, WORD port); TCPIP 81h: 4 B IP;
+ * TCPPORT 82h: WORD; TCPOPEN 83h, TCPCLOSE 84h (both switch the Sharp ASCII conversion off, as the firmware);
+ * TCPSEND 85h: WORD length (bit 15 = now) and the data (X); TCPRECV 86h: WORD max in, WORD n and n bytes out
+ * (n <= 253); DNSREQ 88h: the name (S); DNSRES 89h: 5 B out (status, IP).
+ */
+static void do_cmdTCP ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    uint8_t *b = g_unimgr.buf_byte;
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        switch ( g_unimgr.cmd ) {
+            case cmdTCPIP: g_unimgr.param_format = "BBBB"; break;
+            case cmdTCPPORT: g_unimgr.param_format = "BB"; break;
+            case cmdTCPSEND: g_unimgr.param_format = "BBX"; break;
+            case cmdTCPRECV: g_unimgr.param_format = "BB"; break;
+            case cmdDNSREQ: g_unimgr.param_format = "S"; break;
+            case cmdTCPSTATUS:
+                unicard_tcp_status ( b );
+                g_unimgr.buf = b;
+                g_unimgr.buf_count = 10;
+                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+                g_unimgr.sts_err = UNIMGR_STS_OK;
+                return;
+            case cmdDNSRES:
+                unicard_dns_result ( b );
+                g_unimgr.buf = b;
+                g_unimgr.buf_count = 5;
+                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+                g_unimgr.sts_err = UNIMGR_STS_OK;
+                return;
+            default:            /* TCPOPEN, TCPCLOSE */
+                g_unimgr.cnv_cmd = UNIMGR_ASCII_CNV_OFF;
+                if ( cmdTCPOPEN == g_unimgr.cmd ) unicard_tcp_open ( );
+                else unicard_tcp_close ( );
+                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+                g_unimgr.sts_err = UNIMGR_STS_OK;
+                return;
+        };
+        unimgr_input_params ( cmd_phase, 0 );
+        return;
+    };
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+    switch ( g_unimgr.cmd ) {
+        case cmdTCPIP:
+            unicard_tcp_set_ip ( b );
+            break;
+        case cmdTCPPORT:
+            unicard_tcp_set_port ( (uint16_t) ( b[0] | ( b[1] << 8 ) ) );
+            break;
+        case cmdTCPSEND:
+            unicard_tcp_send ( &b[2], ( b[0] | ( b[1] << 8 ) ) & 0x7fff );
+            break;
+        case cmdTCPRECV:
+        {
+            int max = b[0] | ( b[1] << 8 );
+            if ( max > PARAM_BUFFER_SIZE - 2 ) max = PARAM_BUFFER_SIZE - 2;
+            int n = unicard_tcp_recv ( &b[2], max );
+            b[0] = (uint8_t) n;
+            b[1] = 0;
+            g_unimgr.buf = b;
+            g_unimgr.buf_count = n + 2;
+            g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+            break;
+        }
+        case cmdDNSREQ:
+            unicard_dns_request ( (const char *) b );
+            break;
+    };
+}
+
+
 static void do_cmdRESET ( void ) {
     unimgr_cloud_cancel ( );
     s_cloud.dir = 0;
@@ -1721,14 +1804,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
             };
             break;
 
-        /* uc3-only příkazy: protokolově akceptujeme (CMD_OK, žádný
-         * error status), ale tiše ignorujeme + console warning.
-         * Klient ne-MZ závislý kód nezhroutí, ale ztratí očekávanou
-         * funkčnost (BOOT, GDGSYNC, networking). V uc1 simulaci
-         * tytéž opcody spadnou do default-case "Not implemented"
-         * (uc1 firmware je vůbec nezná). */
-        case cmdBOOT:
-        case cmdGDGSYNC:
+        /* TCP client and DNS (uc3, unicard_tcp.c on the host's sockets) */
         case cmdTCPSTATUS:
         case cmdTCPIP:
         case cmdTCPPORT:
@@ -1738,6 +1814,22 @@ static void unimgr_write_CMD ( uint8_t data ) {
         case cmdTCPRECV:
         case cmdDNSREQ:
         case cmdDNSRES:
+            if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
+                do_cmdTCP ( UNIMGR_CMDSTATE_START );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+            };
+            break;
+
+        /* uc3-only příkazy: protokolově akceptujeme (CMD_OK, žádný
+         * error status), ale tiše ignorujeme + console warning.
+         * Klient ne-MZ závislý kód nezhroutí, ale ztratí očekávanou
+         * funkčnost (BOOT, GDGSYNC). V uc1 simulaci
+         * tytéž opcody spadnou do default-case "Not implemented"
+         * (uc1 firmware je vůbec nezná). */
+        case cmdBOOT:
+        case cmdGDGSYNC:
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
                 fprintf ( stderr,
                     "WARNING: Unicard cmd 0x%02x ignored - uc3 feature not yet emulated\n",
@@ -1820,6 +1912,14 @@ static void unimgr_write_param ( uint8_t data ) {
 
         case cmdUTIME:
             do_cmdUTIME ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdTCPIP:
+        case cmdTCPPORT:
+        case cmdTCPSEND:
+        case cmdTCPRECV:
+        case cmdDNSREQ:
+            do_cmdTCP ( UNIMGR_CMDSTATE_PARAMOK );
             break;
 
         case cmdRTCSETD:
@@ -1957,6 +2057,9 @@ static uint8_t unimgr_read_DATA ( void ) {
             case cmdSTAT:
             case cmdINFO:
             case cmdMOUNTS:
+            case cmdTCPSTATUS:
+            case cmdTCPRECV:
+            case cmdDNSRES:
                 ret = unimgr_output_data_bin ( );
                 break;
 
