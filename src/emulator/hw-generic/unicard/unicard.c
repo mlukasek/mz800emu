@@ -1132,6 +1132,7 @@ void unicard_exit ( void ) {
 void unicard_reset ( void ) {
     if ( !UNICARD_TEST_IS_CONNECTED ) return;
     unimgr_reset ( );
+    unimgr_rkey_clear ( ); // vzdálené klávesy z doby před resetem zahodit (firmware mk3b 0.37)
 
     /* QD bootstrap remount na machine reset:
      * Pokud je QD nakonfigurován jako Unicard bootstrap (type=UNICARD),

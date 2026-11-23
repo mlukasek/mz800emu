@@ -21,6 +21,7 @@
 #include "hw-generic/unicard/unicard_sfn.h"
 #include "hw-generic/unicard/unicard_ini.h"
 #include "hw-generic/unicard/unimgr_commands.h"
+#include "hw-generic/unicard/unimgr.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
 
@@ -3699,6 +3700,64 @@ void test_unicard_restart_rev2(void)
 }
 
 
+/* rev 2: vzdálené klávesy RKEY 9Ch (fronta ze souboru hostitele MZ800EMU_UNICARD_RKEY): kódy v pořadí, pak 0;
+ * příznak 0100h v INFO; otevřený soubor a jeho čtení RKEY neruší; vyprázdnění fronty (reset počítače); bez rev 2
+ * je 9Ch neznámý příkaz. */
+void test_unicard_rkey_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    char *keys = g_build_filename(s_test_sd_root, "rkey.bin", NULL);
+    const uint8_t codes[3] = { 0x41, 0x8F, 0x0D };
+    g_setenv("MZ800EMU_UNICARD_RKEY", keys, TRUE);
+    unicard_set_api_rev2(1);
+    unimgr_rkey_clear();
+    create_test_file("f.bin", 4);
+    uc_send_cmd(cmdRESET);
+
+    uc_send_cmd(cmdINFO);
+    uint8_t info[16];
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, info[9] & 0x01, "INFO: příznak RKEY 0100h");
+
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_recv_data(), "prázdná fronta: 0");
+
+    g_file_set_contents(keys, (const gchar *)codes, sizeof(codes), NULL);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01); /* FA_READ */
+    uc_send_str("/f.bin");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_recv_data(), "soubor: bajt 0");
+    for (int i = 0; i < 3; i++) {
+        uc_send_cmd(cmdRKEY);
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE(codes[i], uc_recv_data(), "klávesy v pořadí");
+    }
+    TEST_ASSERT_FALSE_MESSAGE(g_file_test(keys, G_FILE_TEST_EXISTS), "soubor kláves přečtený a smazaný");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, uc_recv_data(), "soubor pokračuje bajtem 1");
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_recv_data(), "fronta prázdná");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x02, uc_recv_data(), "soubor pokračuje bajtem 2");
+    uc_send_cmd(cmdRKEY);
+    uc_send_cmd(cmdSTSR);   /* jiný zápis ohlášení zruší: čtení dat je zase soubor */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x03, uc_recv_data(), "po zrušeném RKEY bajt 3 souboru");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "RKEY bez chyby");
+
+    g_file_set_contents(keys, (const gchar *)codes, sizeof(codes), NULL);
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(codes[0], uc_recv_data(), "fronta z nového souboru");
+    unimgr_rkey_clear();
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_recv_data(), "vyprázdněná fronta (reset počítače)");
+
+    unicard_set_api_rev2(0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "fw 0.26: 9Ch = ERROR");
+    g_unsetenv("MZ800EMU_UNICARD_RKEY");
+    g_free(keys);
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -3843,6 +3902,7 @@ int main(int argc, char *argv[])
 
     /* UC API rev 2: RESTART 9Bh. */
     RUN_TEST(test_unicard_restart_rev2);
+    RUN_TEST(test_unicard_rkey_rev2);
 
     int result = UNITY_END();
 

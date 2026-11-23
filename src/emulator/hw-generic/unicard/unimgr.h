@@ -45,6 +45,7 @@ extern "C" {
 #ifdef UNICARD_EMULATED
     extern void unimgr_exit ( void );
     extern void unimgr_reset ( void );
+    extern void unimgr_rkey_clear ( void );
 #endif
     extern void unimgr_write_byte ( en_UNIMGR_ADDR addr, uint8_t data );
     extern uint8_t unimgr_read_byte ( en_UNIMGR_ADDR addr );

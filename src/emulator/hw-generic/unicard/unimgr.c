@@ -787,7 +787,52 @@ static void do_cmdRTCSET ( void ) {
 /* Příznaky UC v INFO [8-9]: co z UC API rev 2 emulace umí. SEEK a dlouhé
  * jméno ve FILINFO emulace uc3 dělá správně vždy. */
 #define UNIMGR_UC_INFO_FLAGS ( UC_INFO_SEEK | UC_INFO_LFN | UC_INFO_EJECT_OK | UC_INFO_MOUNTS | UC_INFO_COPY | \
-                               UC_INFO_CONFIG | UC_INFO_RESTART | UC_INFO_CLOUD )
+                               UC_INFO_CONFIG | UC_INFO_RESTART | UC_INFO_CLOUD | UC_INFO_RKEY )
+
+
+/*
+ * Vzdálené klávesy (UC API rev 2, RKEY 9Ch, jako firmware mk3b 0.37): fronta kódů kláves, které karta dostane
+ * po síti (shell KEY) a program na MZ si je vybírá. Zápis 9Ch na port příkazů jen ohlásí, že příští čtení portu
+ * dat vrátí další kód z fronty (0 = prázdná); stav repozitáře (příkaz, výstup, soubor, adresář) se nemění.
+ * Jakýkoli jiný zápis na porty karty ohlášení zruší. Reset počítače frontu vyprázdní (unicard_reset).
+ * Emulátor frontu plní ze souboru hostitele MZ800EMU_UNICARD_RKEY: když je fronta prázdná, přečte jeho bajty
+ * (kódy kláves) a soubor smaže. Testy ho zapisují přes přejmenování (celý najednou).
+ */
+#define UNIMGR_RKEY_SIZE 64
+
+static struct {
+    uint8_t buf[UNIMGR_RKEY_SIZE];
+    unsigned r, w; // čtení a zápis, počítané bez přetečení přes velikost (w - r = počet)
+    int req; // příští čtení dat vrátí klávesu
+} s_rkey;
+
+
+void unimgr_rkey_clear ( void ) {
+    s_rkey.r = s_rkey.w = 0;
+    s_rkey.req = 0;
+}
+
+
+/* fronta je prázdná: doplnit ze souboru hostitele (MZ800EMU_UNICARD_RKEY) */
+static void unimgr_rkey_fill ( void ) {
+    const char *path = getenv ( "MZ800EMU_UNICARD_RKEY" );
+    if ( !path || !path[0] ) return;
+    FILE *f = fopen ( path, "rb" );
+    if ( !f ) return;
+    int c;
+    while ( ( s_rkey.w - s_rkey.r ) < UNIMGR_RKEY_SIZE && EOF != ( c = fgetc ( f ) ) ) {
+        s_rkey.buf[s_rkey.w++ % UNIMGR_RKEY_SIZE] = (uint8_t) c;
+    };
+    fclose ( f );
+    remove ( path );
+}
+
+
+static uint8_t unimgr_rkey_pop ( void ) {
+    if ( s_rkey.r == s_rkey.w ) unimgr_rkey_fill ( );
+    if ( s_rkey.r == s_rkey.w ) return 0x00;
+    return s_rkey.buf[s_rkey.r++ % UNIMGR_RKEY_SIZE];
+}
 
 
 /*
@@ -1979,6 +2024,13 @@ void unimgr_write_byte ( en_UNIMGR_ADDR addr, uint8_t data ) {
     /* po kazdem zapisu na kterykoliv unimgr port provedeme reset sts ukazatele */
     g_unimgr.sts_pos = 0;
 
+    /* RKEY: jen ohlásí čtení klávesy, stav repozitáře se nemění; jiný zápis ohlášení zruší */
+    if ( ( addr != UNIMGR_ADDR_DATA ) && ( data == cmdRKEY ) && unicard_get_api_rev2 ( ) ) {
+        s_rkey.req = 1;
+        return;
+    };
+    s_rkey.req = 0;
+
     if ( addr == UNIMGR_ADDR_DATA ) {
         unimgr_write_DATA ( data );
     } else {
@@ -2210,6 +2262,10 @@ static uint8_t unimgr_read_STATUS ( void ) {
 
 
 uint8_t unimgr_read_byte ( en_UNIMGR_ADDR addr ) {
+    if ( ( addr == UNIMGR_ADDR_DATA ) && s_rkey.req ) {
+        s_rkey.req = 0;
+        return unimgr_rkey_pop ( );
+    };
     if ( addr == UNIMGR_ADDR_DATA ) return unimgr_read_DATA ( );
     return unimgr_read_STATUS ( );
 }

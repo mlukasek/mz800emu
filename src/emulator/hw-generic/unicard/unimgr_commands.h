@@ -436,6 +436,7 @@ extern "C" {
 #define cmdCOPY         0x9A    // str zdroj, str cíl: kopie souboru, cíl přepíše
 #define cmdRESTART      0x9B    // restart firmwaru karty (počítač ne), repozitář jako po zapnutí
 #define cmdLISTVOL      0x90    // svazky jako MZPico: "sd:" 0Dh, s cloudem i "cloud:" 0Dh
+#define cmdRKEY         0x9C    // vzdálená klávesa: příští čtení dat (51h) vrátí kód z fronty karty, 0 = žádná
 
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
@@ -446,6 +447,7 @@ extern "C" {
 #define UC_INFO_EJECT_OK    0x0020  // MOUNT s prázdnou cestou hlásí OK
 #define UC_INFO_RESTART     0x0040  // RESTART 9Bh
 #define UC_INFO_CLOUD       0x0080  // svazek cloud: (FILELIST, READDIR, OPEN, COPY), LISTVOL 90h
+#define UC_INFO_RKEY        0x0100  // vzdálené klávesy RKEY 9Ch
 
 #define UC_INFO_BOARD_MK3B  0x01    // INFO [1]: Unicard mk3b
 
