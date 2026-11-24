@@ -11,7 +11,12 @@
  * in the firmware's vector table at 0x08008228; SVC 0 puts a pixel (r0 x, r1 y, r2 colour) into it.
  *
  * The emulation runs the code in the Cortex-M4 interpreter (armcm4.c) at once, when CDh comes, and keeps the card
- * busy for the emulated time of its cycles at 168 MHz. Memory of the code: SRAM3 64 KB, a stack of 32 KB under
+ * busy for the time the card needs: its M4 cycles at an effective 56 MHz and 100 us to start (measured with CPUTIME
+ * of UC-UniMgr on the author's card, fw 0.38b1, 2026-11-24: the card takes 2.8-3.1 times the M4 cycles at 168 MHz,
+ * ALU 2.91, loads and stores 2.97, FPU 2.80, divides 2.91, compiled code 3.10; it runs the code from SRAM3 over the
+ * system bus, the VGA and bus interrupts take their share; in the 320 x 200 mode about 1 % more). The code must keep r4-r11,
+ * s16-s31 and SP (AAPCS): the firmware calls it from its main loop, whose registers it would spoil (the card then
+ * hangs, e.g. with the MZ in WAIT); the emulation checks them and reports it. Memory of the code: SRAM3 64 KB, a stack of 32 KB under
  * 0x20010000 (on the card the main loop's stack), the CCM with the VRAM copy at 0x10002620 (the address of the
  * firmware 0.38b1) mapped onto the GDG VRAM of the emulator: the emulator shows what the card shows on its VGA
  * (on a real MZ the program's own output only), the rest of the CCM a scratch RAM; the flash reads 0 but the VRAM
@@ -44,7 +49,8 @@
 #define OC_VRAM_PTR 0x08008228u         /* the vector table word with the VRAM address */
 #define OC_FLASH 0x08000000u
 #define OC_FLASH_SIZE 0x00200000u
-#define OC_ARM_HZ 168000000u
+#define OC_CARD_HZ 56000000u            /* M4 cycles a second on the card (168 MHz / 3.0, CPUTIME) */
+#define OC_CALL_US 100u                 /* from the call to the code (the main loop takes the event, CPUTIME) */
 #define OC_LIMIT 200000000u             /* instructions of one call (over 1 s of the card) */
 
 static uint8_t s_sram3[OC_SRAM3_SIZE];
@@ -54,6 +60,7 @@ static st_ARMCM4 s_cpu;
 static int s_cpu_ready;
 static uint32_t s_addr = OC_SRAM3;
 static uint64_t s_busy_until;
+static uint32_t s_abi_errors;           /* the registers the last call did not keep: bit n = rn, 31 = s16-s31 */
 
 
 int unicard_opencpu_available ( void ) {
@@ -192,12 +199,24 @@ int unicard_opencpu_call ( uint32_t addr ) {
     cpu_setup ( );
     uint64_t cycles = s_cpu.cycles;
     memset ( s_cpu.r, 0, sizeof ( s_cpu.r ) );
+    for ( uint32_t i = 4; i <= 11; i++ ) s_cpu.r[i] = 0xC0DE0000u | i;     /* the main loop's registers */
+    for ( uint32_t i = 16; i < 32; i++ ) s_cpu.s[i] = 0x7F8C0000u | i;
     int res = armcm4_call ( &s_cpu, addr, OC_STACK_TOP, OC_LIMIT );
+    s_abi_errors = 0;
     if ( ARMCM4_OK != res ) {
         fprintf ( stderr, "WARNING: Unicard OpenCPU: %s at %08X (instruction %08X, address %08X); the card would"
                   " crash\n", armcm4_fault_text ( res ), s_cpu.fault_pc, s_cpu.fault_insn, s_cpu.fault_addr );
+    } else {
+        for ( uint32_t i = 4; i <= 11; i++ ) if ( s_cpu.r[i] != ( 0xC0DE0000u | i ) ) s_abi_errors |= 1u << i;
+        if ( OC_STACK_TOP != s_cpu.r[13] ) s_abi_errors |= 1u << 13;
+        for ( uint32_t i = 16; i < 32; i++ ) if ( s_cpu.s[i] != ( 0x7F8C0000u | i ) ) s_abi_errors |= 1u << 31;
+        if ( s_abi_errors ) {
+            fprintf ( stderr, "WARNING: Unicard OpenCPU: the code at %08X did not keep the registers %08Xh (bit n = rn,"
+                      " 13 SP, 31 s16-s31; AAPCS): on the card the firmware's main loop goes wrong (it hangs)\n",
+                      addr & ~1u, s_abi_errors );
+        };
     };
-    uint64_t ticks = ( s_cpu.cycles - cycles ) * GDGCLK_BASE / OC_ARM_HZ;
+    uint64_t ticks = ( s_cpu.cycles - cycles ) * GDGCLK_BASE / OC_CARD_HZ + (uint64_t) OC_CALL_US * GDGCLK_BASE / 1000000u;
     s_busy_until = gdg_get_total_ticks ( ) + ticks;
     return 1;
 }
@@ -217,6 +236,11 @@ uint64_t unicard_opencpu_busy_ticks ( void ) {
 uint32_t unicard_opencpu_busy_cpu ( void ) {
     uint64_t t = unicard_opencpu_busy_ticks ( ) / GDGCLK2CPU_DIVIDER;
     return ( t > 0xFFFFFFFFu ) ? 0xFFFFFFFFu : (uint32_t) t;
+}
+
+
+uint32_t unicard_opencpu_abi_errors ( void ) {
+    return s_abi_errors;
 }
 
 

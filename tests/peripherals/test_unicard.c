@@ -25,6 +25,7 @@
 #include "hw-generic/unicard/unicard_tcp.h"
 #include "hw-generic/unicard/unicard_net.h"
 #include "hw-generic/unicard/unicard_opencpu.h"
+#include "hw-generic/gdg/gdgclk.h"
 #include "mzarch/mz800/memory/mz800_memory.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
@@ -4655,12 +4656,40 @@ void test_unicard_opencpu_rev2(void)
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xCD, uc_recv_data(), "kód běží: port 51h čte CDh");
     unicard_opencpu_finish();
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xFF, g_memoryVRAM_I[0], "kód zapsal do kopie VRAM (rovina I)");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0, unicard_opencpu_abi_errors(), "kód zachoval r4-r11 a SP");
     net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x01\x02\x20", 4);
     net_cmd(cmdCPUREAD, NULL, 0);
     net_out(out, 1);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x42, out[0], "kód zapsal do SRAM3");
     net_cmd(cmdCPUCALL, (const uint8_t *)"\x00\x00\x03\x20", 4);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, net_error(), "volání mimo SRAM3");
+
+    /* kód, který přepíše r4 (porušení AAPCS: karta by zamrzla, emulace to ohlásí) */
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x00", 1);         /* movs r4, #0 */
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x24", 1);
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x70", 1);         /* bx lr */
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x47", 1);
+    net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02\x20", 4);
+    unicard_opencpu_finish();
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(1u << 4, unicard_opencpu_abi_errors(), "r4 nezachovaný");
+
+    /* doba běhu: smyčka 10 000 průchodů = asi 40 000 cyklů M4, karta jich stihne 56 milionů za sekundu (CPUTIME
+     * z UC-UniMgr na kartě autora) a 100 us trvá, než se kód rozběhne: 0,814 ms */
+    static const uint8_t loop[] = {
+        0x42, 0xf2, 0x10, 0x70, /* movw r0, #10000 */
+        0x01, 0x38,             /* 1: subs r0, #1 */
+        0xfd, 0xd1,             /* bne 1b */
+        0x70, 0x47,             /* bx lr */
+    };
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
+    for (size_t i = 0; i < sizeof(loop); i++) net_cmd(cmdCPUWRITE, &loop[i], 1);
+    net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02\x20", 4);
+    uint64_t busy = unicard_opencpu_busy_ticks();
+    uint32_t expect = (uint32_t) ( ( 40000.0 / 56e6 + 100e-6 ) * GDGCLK_BASE );
+    TEST_ASSERT_UINT32_WITHIN_MESSAGE(expect / 50, expect, (uint32_t) busy, "doba běhu podle CPUTIME (+-2 %)");
+    unicard_opencpu_finish();
+    TEST_ASSERT_EQUAL_HEX32(0, unicard_opencpu_abi_errors());
 
     unicard_reset();                                /* SRAM3 si bere zpátky cache RAM disku */
     net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x01\x02\x20", 4);

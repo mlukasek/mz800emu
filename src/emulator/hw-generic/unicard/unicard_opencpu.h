@@ -28,6 +28,8 @@ extern "C" {
     extern uint32_t unicard_opencpu_busy_cpu ( void );     /* the same in CPU T states */
     extern void unicard_opencpu_reset ( void );            /* a reset of the computer: SRAM3 is the cache's again */
     extern void unicard_opencpu_finish ( void );           /* tests: the called code is done now */
+    /* the registers the last call did not keep (AAPCS: the card would hang): bit n = rn, 13 SP, 31 s16-s31 */
+    extern uint32_t unicard_opencpu_abi_errors ( void );
 
 #ifdef __cplusplus
 }

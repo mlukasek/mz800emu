@@ -12,7 +12,9 @@
  * compilers, the single precision FPU (FPv4-SP: VFP data processing, conversions, compare, loads and stores of
  * single and double registers). Not: the parallel add/subtract (SADD16...) and saturating DSP instructions,
  * exclusive access monitors (LDREX/STREX behave as plain accesses, STREX always succeeds), exceptions and
- * privileged state (MRS/MSR read 0 / ignore). Cycles: an estimate of the Cortex-M4 timing (no wait states).
+ * privileged state (MRS/MSR read 0 / ignore). Cycles: a simple model of the Cortex-M4 (1 an instruction, +2 a taken
+ * branch, LDM/STM a word each, UDIV/SDIV +3, VDIV/VSQRT +13...): its relative costs follow the measurement on the card
+ * (CPUTIME of UC-UniMgr), unicard_opencpu.c turns it into the card's time.
  */
 
 #ifndef ARMCM4_H

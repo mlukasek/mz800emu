@@ -301,8 +301,7 @@ static uint32_t rev ( uint32_t v ) {
 
 /* one load into Rt: size 1, 2, 4; sgn = sign extended; Rt = PC: an interworking branch (a word) */
 static void load ( st_ARMCM4 *c, uint32_t t, uint32_t a, int size, int sgn ) {
-    uint32_t v = rd ( c, a, size );
-    c->cycles += 1;
+    uint32_t v = rd ( c, a, size );                         /* (no extra cycle: see CPUTIME in unicard_opencpu.c) */
     if ( c->fault ) return;
     if ( sgn ) v = sext ( v, size * 8 );
     if ( 15 == t ) bx ( c, v );
@@ -819,12 +818,12 @@ static void long_multiply ( st_ARMCM4 *c, uint32_t h1, uint32_t h2 ) {
             break;
         case 0x1F:                                          /* SDIV */
             r[hi] = !m ? 0 : ( ( 0x80000000u == n ) && ( 0xFFFFFFFFu == m ) ) ? n : (uint32_t) ( (int32_t) n / (int32_t) m );
-            c->cycles += 5;
+            c->cycles += 3;
             return;
         case 0x20: p = (uint64_t) n * m;                    /* UMULL */
             break;
         case 0x3F: r[hi] = m ? n / m : 0;                   /* UDIV */
-            c->cycles += 5;
+            c->cycles += 3;
             return;
         case 0x40: p = (uint64_t) ( (int64_t) (int32_t) n * (int32_t) m ) + ( ( (uint64_t) r[hi] << 32 ) | r[lo] );   /* SMLAL */
             break;
