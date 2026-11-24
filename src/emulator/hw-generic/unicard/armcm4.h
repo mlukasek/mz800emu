@@ -28,6 +28,7 @@ extern "C" {
 
 #define ARMCM4_REGIONS 4
 #define ARMCM4_RETURN 0xFEFEFEFEu      /* LR of armcm4_call (| 1): the routine returned */
+#define ARMCM4_RUNNING ( -1 )           /* armcm4_run: the cycles are spent, the routine goes on */
 
     enum {
         ARMCM4_OK = 0,
@@ -75,6 +76,11 @@ extern "C" {
     /* calls addr (bit 0 = Thumb) with the stack pointer sp and runs to its return or a fault, at most `limit`
      * instructions; r0-r3 as the caller set them. Returns ARMCM4_OK or ARMCM4_FAULT_*. */
     extern int armcm4_call ( st_ARMCM4 *c, uint32_t addr, uint32_t sp, uint64_t limit );
+    /* the same in parts: armcm4_start prepares the call (ARMCM4_OK or ARMCM4_FAULT_STATE), armcm4_run runs it on
+     * for at least `cycles` cycles (it stops after the instruction that reaches them): ARMCM4_RUNNING, ARMCM4_OK
+     * when it returned, or a fault; ARMCM4_FAULT_LIMIT when c->instructions reaches `insn_end` */
+    extern int armcm4_start ( st_ARMCM4 *c, uint32_t addr, uint32_t sp );
+    extern int armcm4_run ( st_ARMCM4 *c, uint64_t cycles, uint64_t insn_end );
     extern const char* armcm4_fault_text ( int fault );
 
 #ifdef __cplusplus

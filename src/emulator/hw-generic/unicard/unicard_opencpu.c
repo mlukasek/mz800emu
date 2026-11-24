@@ -10,8 +10,12 @@
  * the VGA goes on. The code finds the card's copy of the VRAM (4 planes of 8 KB, MZ-800 order) through the address
  * in the firmware's vector table at 0x08008228; SVC 0 puts a pixel (r0 x, r1 y, r2 colour) into it.
  *
- * The emulation runs the code in the Cortex-M4 interpreter (armcm4.c) at once, when CDh comes, and keeps the card
- * busy for the time the card needs: its M4 cycles at an effective 56 MHz and 100 us to start (measured with CPUTIME
+ * The emulation runs the code in the Cortex-M4 interpreter (armcm4.c) along the emulated time, as the card runs it
+ * beside the MZ: CDh prepares the call, each access to the card's ports runs the code on to the cycles of the time
+ * gone (the program polls 51h for the end), an access the main loop serves runs it to its end (the Z80 waits in
+ * WAIT for it). A whole call at once stalled the emulation for a frame of UniDoom (13-25 ms of the host, its sound
+ * stuttered); the code's VRAM writes now also come along the time, as on the card's VGA. The card needs for the code
+ * its M4 cycles at an effective 56 MHz and 100 us to start (measured with CPUTIME
  * of UC-UniMgr on the author's card, fw 0.38b1, 2026-11-24: the card takes 2.8-3.1 times the M4 cycles at 168 MHz,
  * ALU 2.91, loads and stores 2.97, FPU 2.80, divides 2.91, compiled code 3.10; it runs the code from SRAM3 over the
  * system bus, the VGA and bus interrupts take their share; in the 320 x 200 mode about 1 % more). The code must keep r4-r11,
@@ -59,8 +63,12 @@ static uint8_t s_ccm[OC_CCM_SIZE];
 static st_ARMCM4 s_cpu;
 static int s_cpu_ready;
 static uint32_t s_addr = OC_SRAM3;
-static uint64_t s_busy_until;
+static uint64_t s_busy_until;           /* GDG ticks: the end of the code that already returned (0 = none) */
 static uint32_t s_abi_errors;           /* the registers the last call did not keep: bit n = rn, 31 = s16-s31 */
+static int s_running;                   /* a call runs: the interpreter catches up with the emulated time */
+static uint64_t s_run_start;            /* GDG ticks: the code starts (the call + OC_CALL_US) */
+static uint64_t s_run_cycles0, s_run_insn_end;
+static uint32_t s_run_addr;
 
 
 int unicard_opencpu_available ( void ) {
@@ -194,14 +202,9 @@ uint8_t unicard_opencpu_read ( void ) {
 }
 
 
-int unicard_opencpu_call ( uint32_t addr ) {
-    if ( !unicard_opencpu_available ( ) || !addr_ok ( addr ) ) return 0;
-    cpu_setup ( );
-    uint64_t cycles = s_cpu.cycles;
-    memset ( s_cpu.r, 0, sizeof ( s_cpu.r ) );
-    for ( uint32_t i = 4; i <= 11; i++ ) s_cpu.r[i] = 0xC0DE0000u | i;     /* the main loop's registers */
-    for ( uint32_t i = 16; i < 32; i++ ) s_cpu.s[i] = 0x7F8C0000u | i;
-    int res = armcm4_call ( &s_cpu, addr, OC_STACK_TOP, OC_LIMIT );
+/* the code returned or failed: the end of its time, the faults and the registers it did not keep */
+static void run_end ( int res ) {
+    s_running = 0;
     s_abi_errors = 0;
     if ( ARMCM4_OK != res ) {
         fprintf ( stderr, "WARNING: Unicard OpenCPU: %s at %08X (instruction %08X, address %08X); the card would"
@@ -213,16 +216,60 @@ int unicard_opencpu_call ( uint32_t addr ) {
         if ( s_abi_errors ) {
             fprintf ( stderr, "WARNING: Unicard OpenCPU: the code at %08X did not keep the registers %08Xh (bit n = rn,"
                       " 13 SP, 31 s16-s31; AAPCS): on the card the firmware's main loop goes wrong (it hangs)\n",
-                      addr & ~1u, s_abi_errors );
+                      s_run_addr & ~1u, s_abi_errors );
         };
     };
-    uint64_t ticks = ( s_cpu.cycles - cycles ) * GDGCLK_BASE / OC_CARD_HZ + (uint64_t) OC_CALL_US * GDGCLK_BASE / 1000000u;
-    s_busy_until = gdg_get_total_ticks ( ) + ticks;
+    s_busy_until = s_run_start + ( s_cpu.cycles - s_run_cycles0 ) * GDGCLK_BASE / OC_CARD_HZ;
+}
+
+
+/* runs the called code on: to the cycles of the emulated time gone since its start, or (to_end) to its end */
+static void run_on ( int to_end ) {
+    if ( !s_running ) return;
+    uint64_t budget = UINT64_MAX;
+    if ( !to_end ) {
+        uint64_t now = gdg_get_total_ticks ( );
+        if ( now <= s_run_start ) return;
+        uint64_t target = ( now - s_run_start ) * OC_CARD_HZ / GDGCLK_BASE;
+        uint64_t done = s_cpu.cycles - s_run_cycles0;
+        if ( target <= done ) return;
+        budget = target - done;
+    };
+    int res = armcm4_run ( &s_cpu, budget, s_run_insn_end );
+    if ( ARMCM4_RUNNING != res ) run_end ( res );
+}
+
+
+int unicard_opencpu_call ( uint32_t addr ) {
+    if ( !unicard_opencpu_available ( ) || !addr_ok ( addr ) ) return 0;
+    cpu_setup ( );
+    run_on ( 1 );                                       /* (a call while one runs: the card would not take it) */
+    memset ( s_cpu.r, 0, sizeof ( s_cpu.r ) );
+    for ( uint32_t i = 4; i <= 11; i++ ) s_cpu.r[i] = 0xC0DE0000u | i;     /* the main loop's registers */
+    for ( uint32_t i = 16; i < 32; i++ ) s_cpu.s[i] = 0x7F8C0000u | i;
+    s_run_addr = addr;
+    s_run_start = gdg_get_total_ticks ( ) + (uint64_t) OC_CALL_US * GDGCLK_BASE / 1000000u;
+    s_run_cycles0 = s_cpu.cycles;
+    s_run_insn_end = s_cpu.instructions + OC_LIMIT;
+    s_busy_until = 0;
+    s_running = 1;
+    int res = armcm4_start ( &s_cpu, addr, OC_STACK_TOP );
+    if ( ARMCM4_OK != res ) run_end ( res );
     return 1;
 }
 
 
+int unicard_opencpu_busy ( void ) {
+    run_on ( 0 );
+    if ( s_running ) return 1;
+    if ( s_busy_until && ( gdg_get_total_ticks ( ) < s_busy_until ) ) return 1;
+    s_busy_until = 0;
+    return 0;
+}
+
+
 uint64_t unicard_opencpu_busy_ticks ( void ) {
+    run_on ( 1 );
     if ( !s_busy_until ) return 0;
     uint64_t now = gdg_get_total_ticks ( );
     if ( now >= s_busy_until ) {
@@ -245,6 +292,7 @@ uint32_t unicard_opencpu_abi_errors ( void ) {
 
 
 void unicard_opencpu_finish ( void ) {
+    run_on ( 1 );
     s_busy_until = 0;
 }
 
@@ -254,5 +302,6 @@ void unicard_opencpu_reset ( void ) {
     memset ( s_ccm, 0, sizeof ( s_ccm ) );
     s_addr = OC_SRAM3;
     s_busy_until = 0;
+    s_running = 0;
     s_cpu_ready = 0;
 }

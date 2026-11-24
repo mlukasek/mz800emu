@@ -1298,13 +1298,13 @@ uint8_t unicard_read_byte ( uint16_t port ) {
         case 0x51:
         {
             /* OpenCPU: while the ARM code runs, the bus interrupt reads CDh from the data port (firmware
-             * emu_MZFREPO_read_interrupt) and the main loop serves nothing else */
-            uint32_t busy = unicard_opencpu_busy_cpu ( );
-            if ( unicard_opencpu_busy_ticks ( ) && ( ( port & 0xff ) == 0x51 ) ) {
+             * emu_MZFREPO_read_interrupt) and the main loop serves nothing else: the rest waits for its end */
+            if ( unicard_opencpu_busy ( ) && ( ( port & 0xff ) == 0x51 ) ) {
                 unicard_cpu_wait ( UNICARD_UC3_WAIT.file_read );
                 ret = 0xCD;
                 break;
             };
+            uint32_t busy = unicard_opencpu_busy_cpu ( );
             int fast = unimgr_read_fast ( port & 0x01 );
             ret = unimgr_read_byte ( port & 0x01 );
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {

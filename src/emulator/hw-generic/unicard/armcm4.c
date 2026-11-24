@@ -1248,7 +1248,7 @@ void armcm4_add_region ( st_ARMCM4 *c, uint32_t base, uint32_t size, uint8_t *me
 }
 
 
-int armcm4_call ( st_ARMCM4 *c, uint32_t addr, uint32_t sp, uint64_t limit ) {
+int armcm4_start ( st_ARMCM4 *c, uint32_t addr, uint32_t sp ) {
     c->fault = ARMCM4_OK;
     c->itstate = 0;
     c->r[13] = sp;
@@ -1259,16 +1259,28 @@ int armcm4_call ( st_ARMCM4 *c, uint32_t addr, uint32_t sp, uint64_t limit ) {
         return c->fault;
     };
     c->r[15] = addr & ~1u;
-    uint64_t end = c->instructions + limit;
+    return ARMCM4_OK;
+}
+
+
+int armcm4_run ( st_ARMCM4 *c, uint64_t cycles, uint64_t insn_end ) {
+    uint64_t end = ( c->cycles + cycles < c->cycles ) ? UINT64_MAX : c->cycles + cycles;
     while ( ( ARMCM4_RETURN != c->r[15] ) && !c->fault ) {
-        if ( c->instructions >= end ) {
+        if ( c->instructions >= insn_end ) {
             c->fault = ARMCM4_FAULT_LIMIT;
             c->fault_pc = c->r[15];
             break;
         };
+        if ( c->cycles >= end ) return ARMCM4_RUNNING;
         step ( c );
     };
     return c->fault;
+}
+
+
+int armcm4_call ( st_ARMCM4 *c, uint32_t addr, uint32_t sp, uint64_t limit ) {
+    if ( ARMCM4_OK != armcm4_start ( c, addr, sp ) ) return c->fault;
+    return armcm4_run ( c, UINT64_MAX, c->instructions + limit );
 }
 
 

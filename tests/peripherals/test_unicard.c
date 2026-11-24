@@ -4700,9 +4700,10 @@ void test_unicard_opencpu_rev2(void)
 
     g_memoryVRAM_I[0] = 0x00;
     net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02\x20", 4);
-    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xCD, uc_recv_data(), "kód běží: port 51h čte CDh");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, g_memoryVRAM_I[0], "kód běží s emulovaným časem: hned po CDh ještě nic");
     unicard_opencpu_finish();
+    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xFF, g_memoryVRAM_I[0], "kód zapsal do kopie VRAM (rovina I)");
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0, unicard_opencpu_abi_errors(), "kód zachoval r4-r11 a SP");
     net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x01\x02\x20", 4);

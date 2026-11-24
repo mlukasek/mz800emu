@@ -21,9 +21,11 @@ extern "C" {
     extern int unicard_opencpu_set_addr ( uint32_t addr ); /* CAh; 1 = OK, 0 = outside SRAM3 */
     extern int unicard_opencpu_write ( uint8_t data );     /* CBh: the address goes on */
     extern uint8_t unicard_opencpu_read ( void );          /* CCh, CEh: the address goes on (0 outside SRAM3) */
-    extern int unicard_opencpu_call ( uint32_t addr );     /* CDh: runs the code (Thumb, bit 0 set) */
-    /* GDG ticks the called code still runs on the card (0 = done): port 51h reads CDh meanwhile, the accesses the
-     * firmware's main loop serves wait */
+    extern int unicard_opencpu_call ( uint32_t addr );     /* CDh: starts the code (Thumb, bit 0 set) */
+    /* the called code still runs on the card (port 51h reads CDh); the interpreter catches up with the time */
+    extern int unicard_opencpu_busy ( void );
+    /* GDG ticks the called code still runs on the card (0 = done), for the accesses the firmware's main loop serves:
+     * they wait for its end (the interpreter runs the code to its end) */
     extern uint64_t unicard_opencpu_busy_ticks ( void );
     extern uint32_t unicard_opencpu_busy_cpu ( void );     /* the same in CPU T states */
     extern void unicard_opencpu_reset ( void );            /* a reset of the computer: SRAM3 is the cache's again */
