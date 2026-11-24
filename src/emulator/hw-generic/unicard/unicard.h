@@ -526,6 +526,22 @@ extern "C" {
      */
     extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
+    /* Nejdelší složka cesty (znaků), kterou karta přijme: FatFS firmwaru mk3b s FF_MAX_LFN 32. */
+#define UNICARD_UC3_MAX_LFN 32
+
+    /**
+     * @brief Přijme karta cestu od klienta? (uc3: žádná složka delší než UNICARD_UC3_MAX_LFN)
+     *
+     * FatFS (create_name) delší složku odmítne u každé operace s cestou
+     * (otevření, vytvoření, adresář, přejmenování...) chybou FR_INVALID_NAME.
+     * Délka se počítá ve znacích kódové stránky karty (CP852: 1 bajt = 1 znak).
+     * uc1 se nekontroluje.
+     *
+     * @param card_path cesta od klienta (kódová stránka karty)
+     * @return FR_OK, nebo FR_INVALID_NAME
+     */
+    extern FRESULT unicard_path_name_check ( const char *card_path );
+
     /**
      * @brief uc3: konfigurace mechaniky /unicard/fdN.cfg podle FDC před jejím čtením.
      *

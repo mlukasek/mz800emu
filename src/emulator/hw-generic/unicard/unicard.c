@@ -1417,8 +1417,31 @@ static char* unicard_normalize_emu_path ( const char *emu_path, int *escape_dete
 }
 
 
+FRESULT unicard_path_name_check ( const char *card_path ) {
+    if ( !card_path || ( unicard_get_fw ( ) != UNICARD_FW_UC3 ) ) return FR_OK;
+    unsigned n = 0;
+    for ( const char *p = card_path; *p; p++ ) {
+        if ( ( *p == '/' ) || ( *p == '\\' ) ) {
+            n = 0;
+        } else if ( ++n > UNICARD_UC3_MAX_LFN ) {
+            return FR_INVALID_NAME;
+        };
+    };
+    return FR_OK;
+}
+
+
+/* Chyba pro cestu, kterou jail_resolve odmítl: dlouhá složka = FR_INVALID_NAME (jako FatFS), jinak výchozí. */
+static FRESULT unicard_resolve_fail ( const char *card_path, FRESULT def ) {
+    return ( FR_OK != unicard_path_name_check ( card_path ) ) ? FR_INVALID_NAME : def;
+}
+
+
 char* unicard_jail_resolve_with_naked ( const char *emu_path, char **naked_out ) {
     if ( naked_out ) *naked_out = NULL;
+
+    /* Složka delší než 32 znaků: FatFS karty ji odmítne (FR_INVALID_NAME, volající přes unicard_resolve_fail). */
+    if ( FR_OK != unicard_path_name_check ( emu_path ) ) return NULL;
 
     int escape = 0;
     /* Cesta přišla v kódové stránce karty (uc3: CP852), hostitel má UTF-8. */
@@ -1511,7 +1534,7 @@ FRESULT unicard_chdir ( char *dirpath ) {
 
     char *naked_dirpath = NULL;
     char *full_dirpath = unicard_jail_resolve_with_naked ( dirpath, &naked_dirpath );
-    if ( !full_dirpath ) return FR_NO_PATH; /* jail escape */
+    if ( !full_dirpath ) return unicard_resolve_fail ( dirpath, FR_NO_PATH ); /* jail escape nebo dlouhé jméno */
 
     char *full_dirpath_locale = baseui_tools_file_name_locale_from_utf8 ( full_dirpath );
 
@@ -1581,7 +1604,7 @@ FRESULT unicard_dir_open ( st_UNICARD_DIR *dir, char *dirpath ) {
 
     char *naked_dirpath = NULL;
     char *full_dirpath = unicard_jail_resolve_with_naked ( dirpath, &naked_dirpath );
-    if ( !full_dirpath ) return FR_NO_PATH; /* jail escape */
+    if ( !full_dirpath ) return unicard_resolve_fail ( dirpath, FR_NO_PATH ); /* jail escape nebo dlouhé jméno */
 
     char *full_dirpath_locale = baseui_tools_file_name_locale_from_utf8 ( full_dirpath );
 
@@ -1967,7 +1990,7 @@ FRESULT unicard_file_open ( st_UNICARD_FILE *file, char *filepath, uint8_t fa_mo
 
     char *naked_filepath = NULL;
     char *full_filepath = unicard_jail_resolve_with_naked ( filepath, &naked_filepath );
-    if ( !full_filepath ) return FR_NO_PATH; /* jail escape */
+    if ( !full_filepath ) return unicard_resolve_fail ( filepath, FR_NO_PATH ); /* jail escape nebo dlouhé jméno */
 
     char *full_filepath_locale = baseui_tools_file_name_locale_from_utf8 ( full_filepath );
 
@@ -2363,7 +2386,7 @@ FRESULT unicard_stat ( const char *path, st_UNICARD_FILINFO *finfo ) {
 
     char *naked_path = NULL;
     char *full_path = unicard_jail_resolve_with_naked ( path, &naked_path );
-    if ( !full_path ) return FR_NO_FILE; /* jail escape */
+    if ( !full_path ) return unicard_resolve_fail ( path, FR_NO_FILE ); /* jail escape nebo dlouhé jméno */
 
     if ( !g_file_test ( full_path, G_FILE_TEST_EXISTS ) ) {
         baseui_tools_mem_free ( naked_path );
@@ -2450,7 +2473,7 @@ FRESULT unicard_mkdir ( const char *path ) {
         return FR_WRITE_PROTECTED;
     }
     char *full = unicard_jail_resolve ( path );
-    if ( !full ) return FR_NO_PATH; /* jail escape */
+    if ( !full ) return unicard_resolve_fail ( path, FR_NO_PATH ); /* jail escape nebo dlouhé jméno */
 
     FRESULT ret;
     if ( g_file_test ( full, G_FILE_TEST_EXISTS ) ) {
@@ -2473,7 +2496,7 @@ FRESULT unicard_unlink ( const char *path ) {
         return FR_WRITE_PROTECTED;
     }
     char *full = unicard_jail_resolve ( path );
-    if ( !full ) return FR_NO_FILE; /* jail escape */
+    if ( !full ) return unicard_resolve_fail ( path, FR_NO_FILE ); /* jail escape nebo dlouhé jméno */
 
     FRESULT ret;
     if ( !g_file_test ( full, G_FILE_TEST_EXISTS ) ) {
@@ -2497,11 +2520,11 @@ FRESULT unicard_rename ( const char *old_path, const char *new_path ) {
         return FR_WRITE_PROTECTED;
     }
     char *full_old = unicard_jail_resolve ( old_path );
-    if ( !full_old ) return FR_NO_FILE; /* jail escape (zdroj) */
+    if ( !full_old ) return unicard_resolve_fail ( old_path, FR_NO_FILE ); /* jail escape nebo dlouhé jméno */
     char *full_new = unicard_jail_resolve ( new_path );
     if ( !full_new ) {
         baseui_tools_mem_free ( full_old );
-        return FR_NO_PATH; /* jail escape (cíl) */
+        return unicard_resolve_fail ( new_path, FR_NO_PATH ); /* jail escape nebo dlouhé jméno (cíl) */
     }
 
     FRESULT ret;
@@ -2546,7 +2569,7 @@ FRESULT unicard_utime ( const char *path, const uint8_t fat_dt[6] ) {
          hour > 23 || min > 59 || sec > 59 ) return FR_INVALID_PARAMETER;
 
     char *full = unicard_jail_resolve ( path );
-    if ( !full ) return FR_NO_FILE; /* jail escape */
+    if ( !full ) return unicard_resolve_fail ( path, FR_NO_FILE ); /* jail escape nebo dlouhé jméno */
 
     if ( !g_file_test ( full, G_FILE_TEST_EXISTS ) ) {
         baseui_tools_mem_free ( full );
@@ -2598,7 +2621,7 @@ FRESULT unicard_chmod ( const char *path, uint8_t attr, uint8_t mask ) {
     if ( !path ) return FR_INVALID_PARAMETER;
 
     char *full = unicard_jail_resolve ( path );
-    if ( !full ) return FR_NO_FILE; /* jail escape */
+    if ( !full ) return unicard_resolve_fail ( path, FR_NO_FILE ); /* jail escape nebo dlouhé jméno */
 
     FRESULT ret = g_file_test ( full, G_FILE_TEST_EXISTS ) ? FR_OK : FR_NO_FILE;
 
@@ -3075,6 +3098,9 @@ FRESULT unicard_copy_start ( const char *src_path, const char *dst_path ) {
         unicard_warn_readonly_blocked ( );
         return FR_WRITE_PROTECTED;
     };
+    if ( ( FR_OK != unicard_path_name_check ( src_path ) ) || ( FR_OK != unicard_path_name_check ( dst_path ) ) ) {
+        return FR_INVALID_NAME;
+    };
     return unicard_copy_begin ( unicard_jail_resolve ( src_path ), unicard_jail_resolve ( dst_path ) );
 }
 
@@ -3203,6 +3229,7 @@ FRESULT unicard_cloud_copy_start ( const char *cloud_path, const char *dst_path 
         unicard_warn_readonly_blocked ( );
         return FR_WRITE_PROTECTED;
     };
+    if ( FR_OK != unicard_path_name_check ( dst_path ) ) return FR_INVALID_NAME;
     char *src = unicard_cloud_resolve ( cloud_path );
     if ( !src ) return FR_NO_FILE;
     return unicard_copy_begin ( src, unicard_jail_resolve ( dst_path ) );

@@ -782,6 +782,47 @@ void test_unicard_status_eof_at_size(void)
 }
 
 
+/* uc3: složka cesty delší než 32 znaků = FR_INVALID_NAME jako FatFS karty
+ * (FF_MAX_LFN 32, u každé operace s cestou); 32 znaků projde. uc1 ne. */
+void test_unicard_uc3_long_name_invalid(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    const char *n32 = "/abcdefghijklmnopqrstuvwxyz012345";      /* 32 znaků */
+    const char *n33 = "/abcdefghijklmnopqrstuvwxyz0123456";     /* 33 znaků */
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x0a);                         /* FA_WRITE | FA_CREATE_ALWAYS */
+    uc_send_str(n32);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "32 znaků = OK");
+    uc_close();
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x0a);
+    uc_send_str(n33);
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "33 znaků = chyba");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_INVALID_NAME, uc_read_status_byte(3), "33 znaků = FR_INVALID_NAME");
+    TEST_ASSERT_FALSE_MESSAGE(g_file_test(g_build_filename(s_test_sd_root, n33 + 1, NULL), G_FILE_TEST_EXISTS),
+                              "soubor 33 znaků nevznikl");
+    uc_send_cmd(cmdMKDIR);
+    uc_send_str("/dir/abcdefghijklmnopqrstuvwxyz0123456");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_INVALID_NAME, uc_read_status_byte(3), "MKDIR: složka 33 znaků");
+    uc_send_cmd(cmdCHDIR);
+    uc_send_str("/abcdefghijklmnopqrstuvwxyz0123456/x");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_INVALID_NAME, uc_read_status_byte(3), "CHDIR: první složka 33 znaků");
+
+    if (g_mzarch_platform_numeric != 800) return;
+    unicard_set_fw(UNICARD_FW_UC1);                 /* uc1 nekontroluje */
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x0a);
+    uc_send_str(n33);
+    uint8_t sts = uc_master_status();
+    uc_close();
+    unicard_set_fw(UNICARD_FW_UC3);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR, "uc1: 33 znaků projde");
+}
+
+
 /* Read full file content from host FS pro verifikaci. */
 static size_t read_file_content(const char *rel_path, uint8_t *buf, size_t cap)
 {
@@ -4135,6 +4176,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_parser_BS_open_existing);
     RUN_TEST(test_unicard_cmdSIZE);
     RUN_TEST(test_unicard_status_eof_at_size);
+    RUN_TEST(test_unicard_uc3_long_name_invalid);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);
     RUN_TEST(test_unicard_cmdSTAT_dir);
