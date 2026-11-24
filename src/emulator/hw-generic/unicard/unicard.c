@@ -54,6 +54,9 @@
 #include "SDERR800_MZF.h"
 #include "SDERR1500_MZF.h"
 #include "emulator/mzarch/mzarch_platform.h"
+#include "mzarch/mzarch.h"
+#include "hw-generic/devbus/devbus.h"
+#include "libs/cpu-z80/z80.h"
 #include "fdc/fdc.h"
 #include "baseui/baseui.h"
 #include "baseui/baseui_filechooser.h"
@@ -1215,6 +1218,16 @@ void unicard_write_byte ( uint16_t port, uint8_t data ) {
 }
 
 
+/* Prodlouží aktuální cyklus CPU o čekací stavy karty (vzor mz700_devbus_cpu_wait).
+ * Přístup debuggeru (MCP io_read, port v breakpointu) neběží v cyklu CPU: nic. */
+static void unicard_cpu_wait ( unsigned tstates ) {
+    if ( devbus_access_is_debugger ( ) || ( g_mzarch_main.cpu == NULL ) ) return;
+    z80_add_wait_states ( g_mzarch_main.cpu, (int) tstates );
+    uint64_t sum = (uint64_t) g_mzarch_main.instruction_wait_tstates + tstates;
+    g_mzarch_main.instruction_wait_tstates = ( sum > 0xFFFFFFFFu ) ? 0xFFFFFFFFu : (uint32_t) sum;
+}
+
+
 uint8_t unicard_read_byte ( uint16_t port ) {
     uint8_t ret = 0x00;
 
@@ -1222,6 +1235,10 @@ uint8_t unicard_read_byte ( uint16_t port ) {
         case 0x50:
         case 0x51:
             ret = unimgr_read_byte ( port & 0x01 );
+            /* uc3 v0.37: karta drží Z80 ve WAIT, než data připraví (změřeno jen čtení portu dat) */
+            if ( ( ( port & 0xff ) == 0x51 ) && unicard_get_api_rev2 ( ) ) {
+                unicard_cpu_wait ( UNICARD_UC3_REV2_DATA_READ_WAIT );
+            };
             break;
         default:
             fprintf ( stderr, "%s():%d - Unsupported Unicard port 0x%02x\n", __func__, __LINE__, port );

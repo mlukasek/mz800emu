@@ -526,6 +526,12 @@ extern "C" {
      */
     extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
+    /* Čekací stavy karty na jedno čtení portu dat 51h (uc3 v0.37). Změřeno 2026-11-24 na Unicard mk3b
+     * (F429, fw 0.38b1, MZ-800 PAL) modulem busload Unicard Manageru 3.0: INIR 27,2 T na bajt proti 23,2 T
+     * emulátoru, INI po 42 T 55,4 proti 51,2 T, tedy asi 4 T (průměr i s občasným načtením stránky 4 KB
+     * ze SD). Čtení stavu (50h) a zápisy změřené nejsou a čekání nemají. */
+#define UNICARD_UC3_REV2_DATA_READ_WAIT 4
+
     /* Nejdelší složka cesty (znaků), kterou karta přijme: FatFS firmwaru mk3b s FF_MAX_LFN 32. */
 #define UNICARD_UC3_MAX_LFN 32
 

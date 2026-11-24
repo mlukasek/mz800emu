@@ -26,6 +26,7 @@
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
 #include "mzarch/mzarch.h"
+#include "hw-generic/devbus/devbus.h"
 
 /* Porty unicard (interní mapování unimgr_write_byte/unimgr_read_byte). */
 #define UNICARD_PORT_CMD   0x50
@@ -847,6 +848,39 @@ void test_unicard_dns_resolving(void)
     unicard_dns_request("");
     unicard_dns_result(r);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_DNS_BAD_ARGS, r[0], "prázdné jméno");
+}
+
+
+/* uc3 v0.37: čtení portu dat 51h prodlouží cyklus CPU o čekací stavy karty
+ * (změřeno 4 T); stav 50h, v0.26 a přístup debuggeru ne. */
+void test_unicard_rev2_data_read_wait(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("wait.bin", 4);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);
+    uc_send_str("wait.bin");
+    g_mzarch_main.instruction_wait_tstates = 0;
+    uc_recv_data();
+    uc_master_status();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, g_mzarch_main.instruction_wait_tstates, "v0.26 bez čekání");
+
+    unicard_set_api_rev2(1);
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
+                                     "v0.37: čtení dat + 4 T");
+    uc_master_status();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
+                                     "čtení stavu bez čekání (nezměřeno)");
+    devbus_debugger_access_begin();
+    uc_recv_data();
+    devbus_debugger_access_end();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
+                                     "přístup debuggeru bez čekání");
+    g_mzarch_main.instruction_wait_tstates = 0;
+    uc_close();
 }
 
 
@@ -4205,6 +4239,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_status_eof_at_size);
     RUN_TEST(test_unicard_uc3_long_name_invalid);
     RUN_TEST(test_unicard_dns_resolving);
+    RUN_TEST(test_unicard_rev2_data_read_wait);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);
     RUN_TEST(test_unicard_cmdSTAT_dir);
