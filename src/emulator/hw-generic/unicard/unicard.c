@@ -2044,7 +2044,9 @@ FRESULT unicard_file_open ( st_UNICARD_FILE *file, char *filepath, uint8_t fa_mo
          ( fa_mode == FA_READ ) ) {
 
         int drive_id = naked_filepath[fdcfg1_len] - '0';
-        if ( ( drive_id >= 0 ) && ( drive_id <= 3 ) ) {
+        if ( ( drive_id >= 0 ) && ( drive_id <= 3 ) && ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) ) {
+            unicard_fdcfg_sync_uc3 ( drive_id, full_filepath );
+        } else if ( ( drive_id >= 0 ) && ( drive_id <= 3 ) ) {
             /* Cesta k DSK se čte z FDC spravovaného Unicard API; NONE -> NULL. */
             st_FDC *managed_fdc = unicard_managed_fdc_instance ( );
             const char *dsk_filepath = managed_fdc ? fdc_get_dsk_filepath ( managed_fdc, drive_id ) : NULL;
@@ -2654,6 +2656,70 @@ static const char *s_mount_cfg_name[8] = {
     "fd0.cfg", "fd1.cfg", "fd2.cfg", "fd3.cfg",
     "ramdisc.cfg", "qd.cfg", "emm.cfg", "sasi.cfg"
 };
+
+
+/* Hostitelská cesta pro porovnání: oddělovače '/', bez zdvojených; na Windows bez velikosti písmen. */
+static char* unicard_host_path_key ( const char *path ) {
+    GString *s = g_string_new ( "" );
+    for ( const char *p = path; *p; p++ ) {
+        char c = ( *p == '\\' ) ? '/' : *p;
+        if ( ( c == '/' ) && ( s->len > 0 ) && ( s->str[s->len - 1] == '/' ) ) continue;
+        g_string_append_c ( s, c );
+    };
+#ifdef G_OS_WIN32
+    char *key = g_utf8_casefold ( s->str, -1 );
+    g_string_free ( s, TRUE );
+    return key;
+#else
+    return g_string_free ( s, FALSE );
+#endif
+}
+
+
+void unicard_fdcfg_sync_uc3 ( int drive_id, const char *cfg_full ) {
+    st_FDC *fdc = unicard_managed_fdc_instance ( );
+    const char *dsk = fdc ? fdc_get_dsk_filepath ( fdc, drive_id ) : NULL;
+    if ( !dsk || ( dsk[0] == 0x00 ) ) return; // bez FDC nebo prázdná mechanika: konfigurace jako na kartě
+    if ( unicard_test_readonly ( ) ) return;
+
+    char cur[1024];
+    int have = unicard_mount_cfg_get ( (uint8_t) drive_id, cur + 1, sizeof ( cur ) - 1 );
+    if ( have > 0 ) {
+        /* Cesta v konfiguraci se bere od kořene SD karty (FDC_setFDfromCFG). */
+        cur[0] = '/';
+        char *cur_full = unicard_jail_resolve ( ( cur[1] == '/' ) ? cur + 1 : cur );
+        int same = 0;
+        if ( cur_full ) {
+            char *a = unicard_host_path_key ( cur_full );
+            char *b = unicard_host_path_key ( dsk );
+            same = ( 0 == strcmp ( a, b ) );
+            g_free ( a );
+            g_free ( b );
+            g_free ( cur_full );
+        };
+        if ( same ) return;
+    };
+
+    /* Obraz v mechanice vložil někdo jiný než karta (GUI emulátoru). */
+    const char *root = unicard_get_sd_root_dirpath ( );
+    size_t root_len = strlen ( root );
+    char *text = NULL;
+    if ( ( 0 == strncmp ( dsk, root, root_len ) ) && ( ( dsk[root_len] == '/' ) || ( dsk[root_len] == '\\' ) ) ) {
+        char *naked = g_strdup ( &dsk[root_len] );
+        for ( char *p = naked; *p; p++ ) if ( *p == '\\' ) *p = '/';
+        char card[1024];
+        if ( unicard_path_to_card ( naked, card, sizeof ( card ) ) >= 0 ) text = g_strdup ( card );
+        g_free ( naked );
+    } else {
+        char *basename = g_path_get_basename ( dsk );
+        text = g_strdup_printf ( "***mz800emu path*** '%s'\n", basename );
+        g_free ( basename );
+    };
+    if ( text ) {
+        g_file_set_contents ( cfg_full, text, strlen ( text ), NULL );
+        g_free ( text );
+    };
+}
 
 
 int unicard_mount_cfg_get ( uint8_t dev_id, char *out, size_t size ) {

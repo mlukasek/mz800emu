@@ -527,6 +527,20 @@ extern "C" {
     extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
     /**
+     * @brief uc3: konfigurace mechaniky /unicard/fdN.cfg podle FDC před jejím čtením.
+     *
+     * Konfiguraci zapisuje MOUNT jako karta. Přepíše se jen, když spravovaná
+     * mechanika FDC drží jiný obraz (vložený z GUI emulátoru): obraz na SD jako
+     * cesta karty bez konce řádku (jako MOUNT), mimo SD jako "***mz800emu path***".
+     * Bez spravovaného FDC, s prázdnou mechanikou (karta po MOUNT chybějícího
+     * obrazu), se stejným obrazem nebo se SD jen pro čtení se nemění.
+     *
+     * @param drive_id mechanika 0-3
+     * @param cfg_full hostitelská cesta konfigurace
+     */
+    extern void unicard_fdcfg_sync_uc3 ( int drive_id, const char *cfg_full );
+
+    /**
      * @brief Hodiny karty z NTP zapnuté? (platný TIMEZONE v /unicard/network.cfg)
      *
      * INFO 95h bajt 3 příznak 10h (jako MZPico). Řetězec POSIX TZ se kontroluje

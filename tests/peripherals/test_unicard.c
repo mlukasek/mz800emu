@@ -2696,6 +2696,42 @@ void test_unicard_mount_writes_cfg(void)
 }
 
 
+/* uc3: čtení fdN.cfg ho nepřepíše (bez spravovaného FDC ani s prázdnou
+ * mechanikou: karta po MOUNT chybějícího obrazu); dřív ho emulace přepsala
+ * podle FDC (prázdná mechanika = prázdný soubor). */
+void test_unicard_fdcfg_read_keeps_cfg(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("disk.dsk", 16);
+    uc_mount(1, "/disk.dsk");                   /* managed FDC NONE */
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);
+    uc_send_str("/unicard/fd1.cfg");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "OPEN fd1.cfg = OK");
+    char got[32];
+    size_t n = 0;
+    while ((n < sizeof(got) - 1) && !(uc_master_status() & UNICARD_STS_EOF)) got[n++] = (char)uc_recv_data();
+    got[n] = 0;
+    uc_close();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("/disk.dsk", got, "klient čte konfiguraci z MOUNT");
+    char *cfg = read_unicard_cfg("fd1.cfg");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("/disk.dsk", cfg, "bez spravovaného FDC beze změny");
+    g_free(cfg);
+
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    uc_mount(0, "/nothing.dsk");                /* chybějící obraz: konfigurace zůstane, mechanika prázdná */
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);
+    uc_send_str("/unicard/fd0.cfg");
+    uc_close();
+    cfg = read_unicard_cfg("fd0.cfg");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("/nothing.dsk", cfg, "prázdná mechanika: konfigurace karty zůstane");
+    g_free(cfg);
+}
+
+
 /* Jednotky 4-7 mají vlastní jména konfigurace (ramdisc, qd, emm, sasi). */
 void test_unicard_mount_cfg_names_4_7(void)
 {
@@ -4110,6 +4146,7 @@ int main(int argc, char *argv[])
 
     /* cmdMOUNT (uc3 = fw 0.26): konfigurace jednotek. */
     RUN_TEST(test_unicard_mount_writes_cfg);
+    RUN_TEST(test_unicard_fdcfg_read_keeps_cfg);
     RUN_TEST(test_unicard_mount_cfg_names_4_7);
     RUN_TEST(test_unicard_mount_missing_image);
     RUN_TEST(test_unicard_mount_eject_uc3_error);
