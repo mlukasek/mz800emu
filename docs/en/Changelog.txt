@@ -1,3 +1,5 @@
+	- Unicard uc3 v0.37 (UC API rev 2) - GETCONFIG and SETCONFIG as in firmware 0.37 only with a configuration file up to 4 KB (the card's file cache): a bigger file reports error 6 with FR_DENIED, SETCONFIG also when the result would exceed 4 KB (the file is then not changed).
+
 	- BUGFIX: Unicard uc3 v0.37 (UC API rev 2) - COPY of a file onto itself reports FR_DENIED as firmware 0.37 does (the same path ignoring case), and the emulation also compares the paths on the host: a destination given in other case, relatively or by its 8.3 alias truncated the source to zero on Windows.
 
 	- BUGFIX: Unicard - FILELIST writes the file size unsigned as the card does; a file of 2 GiB or more had a negative size.

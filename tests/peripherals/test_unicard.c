@@ -3816,6 +3816,44 @@ static void write_unicard_cfg(const char *name, const char *content)
 }
 
 
+/* Soubor konfigurace do 4 KB jako firmware 0.37 (vyrovnávací paměť souboru):
+ * větší = FR_DENIED pro GETCONFIG i SETCONFIG, SETCONFIG s výsledkem nad 4 KB
+ * také (soubor se nezmění). */
+void test_unicard_config_4kb_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    char out[256];
+    char *big = g_malloc(4097 + 1);
+    memcpy(big, "IPADDR=10.0.0.5\n;", 17);
+    memset(big + 17, 'x', 4097 - 17 - 1);
+    big[4096] = '\n';
+    big[4097] = 0;
+    write_unicard_cfg("network.cfg", big);      /* 4097 B */
+    uc_send_cmd(cmdRESET);
+    uc_getconfig("NETWORK", out, sizeof(out));
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "GETCONFIG souboru 4097 B = chyba");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_FATFS, uc_read_status_byte(2), "kód 6");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "FR_DENIED");
+    uc_setconfig("NETWORK", "DHCP", "1");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "SETCONFIG souboru 4097 B = FR_DENIED");
+
+    big[4095] = '\n';
+    big[4096] = 0;                              /* 4096 B: vejde se */
+    write_unicard_cfg("network.cfg", big);
+    uc_getconfig("NETWORK", out, sizeof(out));
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "GETCONFIG 4096 B = OK");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "IPADDR=10.0.0.5|"), "záznam z 4096 B");
+    uc_setconfig("NETWORK", "DHCP", "1");       /* výsledek přes 4 KB */
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "SETCONFIG s výsledkem nad 4 KB = FR_DENIED");
+    char *now = read_unicard_cfg("network.cfg");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(4096, (uint32_t)strlen(now), "soubor se nezměnil");
+    g_free(now);
+    g_free(big);
+}
+
+
 /* GETCONFIG čte sekce jako firmware: network.cfg i bez hlavičky, unicard.cfg
  * po sekcích; neznámá sekce = prázdný proud. */
 void test_unicard_getconfig_rev2(void)
@@ -4200,6 +4238,7 @@ int main(int argc, char *argv[])
 
     /* UC API rev 2: GETCONFIG, SETCONFIG. */
     RUN_TEST(test_unicard_getconfig_rev2);
+    RUN_TEST(test_unicard_config_4kb_rev2);
     RUN_TEST(test_unicard_getconfig_status_rev2);
     RUN_TEST(test_unicard_info_ntp_timezone);
     RUN_TEST(test_unicard_setconfig_rev2);

@@ -891,6 +891,11 @@ static void do_cmdGETCONFIG ( en_UNIMGR_CMDSTATE cmd_phase ) {
         return;
     };
     char *section = g_ascii_strup ( (char*) g_unimgr.buf_byte, -1 );
+    g_unimgr.ff_res = unicard_config_check_size ( section ); // firmware 0.37: soubor nad 4 KB = FR_DENIED
+    if ( FR_OK != g_unimgr.ff_res ) {
+        g_free ( section );
+        return;
+    };
     g_unimgr.cfg_recs = unicard_config_get ( section );
     g_free ( section );
     g_unimgr.cfg_idx = 0;

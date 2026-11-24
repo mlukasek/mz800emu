@@ -2963,6 +2963,19 @@ GPtrArray* unicard_config_get ( const char *section ) {
 }
 
 
+FRESULT unicard_config_check_size ( const char *section ) {
+    const char *initial;
+    if ( 0 == strcmp ( section, "STATUS" ) ) return FR_OK;
+    const char *name = unicard_config_file ( section, &initial );
+    if ( !name ) return FR_OK;
+    char *path = g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, name, NULL );
+    GStatBuf st;
+    FRESULT res = ( ( g_stat ( path, &st ) == 0 ) && ( st.st_size > UNICARD_CONFIG_FILE_MAX ) ) ? FR_DENIED : FR_OK;
+    g_free ( path );
+    return res;
+}
+
+
 FRESULT unicard_config_set ( const char *section, const char *key, const char *value ) {
     const char *initial;
     const char *name = unicard_config_file ( section, &initial );
@@ -2982,7 +2995,12 @@ FRESULT unicard_config_set ( const char *section, const char *key, const char *v
     };
     gsize nlen = 0;
     char *nd = unicard_ini_set ( data ? data : "", len, section, initial, key, value, &nlen );
-    FRESULT res = g_file_set_contents ( path, nd, (gssize) nlen, NULL ) ? FR_OK : FR_DISK_ERR;
+    FRESULT res;
+    if ( ( len > UNICARD_CONFIG_FILE_MAX ) || ( nlen > UNICARD_CONFIG_FILE_MAX ) ) {
+        res = FR_DENIED; // firmware 0.37: soubor i výsledek jen do 4 KB, soubor se nezmění
+    } else {
+        res = g_file_set_contents ( path, nd, (gssize) nlen, NULL ) ? FR_OK : FR_DISK_ERR;
+    };
     g_free ( nd );
     g_free ( data );
     g_free ( path );

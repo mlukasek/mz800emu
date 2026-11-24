@@ -894,6 +894,19 @@ extern "C" {
      */
     extern FRESULT unicard_config_set ( const char *section, const char *key, const char *value );
 
+    /* Největší soubor konfigurace karty (firmware 0.37: REPO_BUF_SIZE, vyrovnávací paměť souboru). */
+#define UNICARD_CONFIG_FILE_MAX 4096
+
+    /**
+     * @brief Vejde se soubor konfigurace sekce do vyrovnávací paměti karty?
+     *
+     * Firmware 0.37 větší soubor než UNICARD_CONFIG_FILE_MAX odmítne
+     * (GETCONFIG i SETCONFIG).
+     *
+     * @return FR_OK (i když soubor chybí, neznámá sekce nebo STATUS), FR_DENIED
+     */
+    extern FRESULT unicard_config_check_size ( const char *section );
+
     void unicard_ui_select_sd_root_directory(void);
 
     /**
