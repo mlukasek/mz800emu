@@ -967,6 +967,10 @@ static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
         g_unimgr.err_code = UC_ERR_BUSY;
         return;
     };
+    if ( 0 == g_ascii_strcasecmp ( src, dst ) ) { // stejná cesta (firmware 0.37 strcasecmp)
+        g_unimgr.ff_res = FR_DENIED;
+        return;
+    };
     if ( unicard_cloud_is_path ( dst ) ) { // cloud je jen ke čtení
         g_unimgr.ff_res = FR_WRITE_PROTECTED;
         return;

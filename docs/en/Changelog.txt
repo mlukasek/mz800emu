@@ -1,3 +1,5 @@
+	- BUGFIX: Unicard uc3 v0.37 (UC API rev 2) - COPY of a file onto itself reports FR_DENIED as firmware 0.37 does (the same path ignoring case), and the emulation also compares the paths on the host: a destination given in other case, relatively or by its 8.3 alias truncated the source to zero on Windows.
+
 	- BUGFIX: Unicard - FILELIST writes the file size unsigned as the card does; a file of 2 GiB or more had a negative size.
 
 	- BUGFIX: Unicard uc3 - reading the drive configuration /unicard/fd0.cfg-fd3.cfg no longer rewrites it. The mount command writes the configuration as the card does; it is rewritten only when the managed FDC drive holds another image (put in from the emulator's GUI): an image on the SD card as the card's path (/IMG/disk.dsk, no line end, before with backslashes on Windows), an image outside the SD card as before. Without a managed FDC, with an empty drive (the card after mounting a missing image), with the same image or with a read-only SD card the configuration is not changed (before an empty drive made it an empty file). uc1 is unchanged.

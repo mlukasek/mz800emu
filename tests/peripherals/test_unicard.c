@@ -3377,6 +3377,12 @@ void test_unicard_copy_errors_rev2(void)
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_NO_FILE, uc_read_status_byte(3), "FR_NO_FILE");
     uc_copy("/src.bin", "/" UNICARD_UNIMGR_DIR);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "cíl je adresář = FR_DENIED");
+    uc_copy("/src.bin", "/SRC.BIN");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "tentýž soubor jinými písmeny = FR_DENIED");
+    uc_copy("/src.bin", "src.bin");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FR_DENIED, uc_read_status_byte(3), "tentýž soubor relativně = FR_DENIED");
+    uint8_t src_data[8];
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, read_file_content("src.bin", src_data, sizeof(src_data)), "zdroj nezkrácený");
     uc_send_cmd(cmdOPEN);
     uc_send_data(0x01); /* FA_READ */
     uc_send_str("/src.bin");

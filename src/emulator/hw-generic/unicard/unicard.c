@@ -2676,6 +2676,17 @@ static char* unicard_host_path_key ( const char *path ) {
 }
 
 
+/* Tentýž soubor na hostiteli (Windows bez velikosti písmen; 8.3 alias už rozložil jail_resolve)? */
+static int unicard_same_host_file ( const char *a, const char *b ) {
+    char *ka = unicard_host_path_key ( a );
+    char *kb = unicard_host_path_key ( b );
+    int same = ( 0 == strcmp ( ka, kb ) );
+    g_free ( ka );
+    g_free ( kb );
+    return same;
+}
+
+
 void unicard_fdcfg_sync_uc3 ( int drive_id, const char *cfg_full ) {
     st_FDC *fdc = unicard_managed_fdc_instance ( );
     const char *dsk = fdc ? fdc_get_dsk_filepath ( fdc, drive_id ) : NULL;
@@ -2690,11 +2701,7 @@ void unicard_fdcfg_sync_uc3 ( int drive_id, const char *cfg_full ) {
         char *cur_full = unicard_jail_resolve ( ( cur[1] == '/' ) ? cur + 1 : cur );
         int same = 0;
         if ( cur_full ) {
-            char *a = unicard_host_path_key ( cur_full );
-            char *b = unicard_host_path_key ( dsk );
-            same = ( 0 == strcmp ( a, b ) );
-            g_free ( a );
-            g_free ( b );
+            same = unicard_same_host_file ( cur_full, dsk );
             g_free ( cur_full );
         };
         if ( same ) return;
@@ -3060,7 +3067,9 @@ static FRESULT unicard_copy_begin ( char *src, char *dst ) {
         res = FR_NO_PATH;
     } else if ( !g_file_test ( src, G_FILE_TEST_IS_REGULAR ) ) {
         res = FR_NO_FILE;                   /* neexistuje nebo je to adresář */
-    } else if ( g_file_test ( dst, G_FILE_TEST_IS_DIR ) || ( 0 == strcmp ( src, dst ) ) ) {
+    } else if ( g_file_test ( dst, G_FILE_TEST_IS_DIR ) || unicard_same_host_file ( src, dst ) ) {
+        /* Tentýž soubor i zadaný jinak (relativně, aliasem): otevření cíle
+         * by zdroj na hostiteli zkrátilo. */
         res = FR_DENIED;
     } else {
         char *dst_dir = g_path_get_dirname ( dst );
