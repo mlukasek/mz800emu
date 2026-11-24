@@ -7,12 +7,13 @@ roviny I podle registru formátu zápisu WF. Program, který nechá WF v režimu
 XOR, na stroji nechá na obrazovce starý obraz (Unicard Manager 3.0 smazal
 obrazovku a napsal LOADING před nastavením WF a zůstal nepořádek, 2026-11-12).
 
-Kroky (režim MZ-700, DMD 08h, D000h až FFFFh namapované přes E3h):
-  1  WF 01h (SINGLE, rovina I): zápis 0Fh přepíše bajt, čtení 0Fh;
-  2  WF 21h (XOR, rovina I): zápis 55h, čtení 0Fh xor 55h = 5Ah;
-  3  WF 41h (OR, rovina I): zápis 80h, čtení 5Ah or 80h = DAh;
-  4  WF 61h (RESET, rovina I): zápis 0Ah, čtení DAh and not 0Ah = D0h;
-  5  WF 01h po resetu: zápis zase přímo (jako dřív).
+Případy jsou z programu tests/data/mz700_vram_wf/wftest.mzf a hodnoty RD jsou
+naměřené na skutečném MZ-800 (2026-11-24, všech 12 shodně s tímto modelem):
+buňka na D000h dostane přes WF 01h hodnotu PR, pak se do ní přes zkoušený WF
+zapíše NW a přes WF 01h a RF 01h se přečte. Režimy WF (bity 7-5): 000 SINGLE,
+001 XOR, 010 OR, 011 RESET, 10x REPLACE, 11x PSET; rovina I vybraná (xx1h)
+a nevybraná (jen rovina II, xx2h): SINGLE, XOR, OR a RESET pak nezapíšou nic,
+REPLACE zapíše 0, PSET smaže bity NW (jako nevybrané roviny v režimu MZ-800).
 
 Jen MZ-800. Binárka se hledá v kořeni repa nebo v adresáři z proměnné
 ``MZ_EMU_DIR``. Výstup anglicky.
@@ -36,17 +37,35 @@ _ = gettext.gettext
 _CODE = 0x5200
 _RESULT = 0x6000
 
+#: (WF, PR, NW, RD na skutečném MZ-800), jako wftest.
+_CASES = (
+    (0x01, 0x04, 0x0F, 0x0F),   # SINGLE  I
+    (0x21, 0x0B, 0x04, 0x0F),   # XOR     I
+    (0x41, 0x0B, 0x04, 0x0F),   # OR      I
+    (0x61, 0x1F, 0x10, 0x0F),   # RESET   I
+    (0x81, 0x04, 0x0F, 0x0F),   # REPLACE I
+    (0xC1, 0x0B, 0x04, 0x0F),   # PSET    I
+    (0x02, 0x0F, 0x04, 0x0F),   # SINGLE  II: nezapíše
+    (0x22, 0x0F, 0x04, 0x0F),   # XOR     II: nezapíše
+    (0x42, 0x0F, 0x04, 0x0F),   # OR      II: nezapíše
+    (0x62, 0x0F, 0x04, 0x0F),   # RESET   II: nezapíše
+    (0x82, 0x0F, 0x04, 0x00),   # REPLACE II: 0
+    (0xC2, 0x1F, 0x10, 0x0F),   # PSET    II: 1Fh and not 10h
+)
 
-def _write_read(emu, wf, value):
-    """V režimu MZ-700 nastaví WF, zapíše @p value na D000h a vrátí přečtený bajt."""
+
+def _case(emu, wf, preset, value):
+    """V režimu MZ-700: PR přes WF 01h, NW přes zkoušený WF, čtení přes WF a RF 01h."""
     code = bytes([
         0x3E, 0x08, 0xD3, 0xCE,             # LD A,08h; OUT (CEh),A: DMD režim MZ-700
         0xD3, 0xE3,                         # OUT (E3h),A: D000h až FFFFh = VRAM a ROM
-        0x3E, wf, 0xD3, 0xCC,               # LD A,wf; OUT (CCh),A: WF
-        0x3E, value, 0x32, 0x00, 0xD0,      # LD A,value; LD (D000h),A
+        0x3E, 0x01, 0xD3, 0xCC,             # WF 01h
+        0x3E, preset, 0x32, 0x00, 0xD0,     # LD A,PR; LD (D000h),A
+        0x3E, wf, 0xD3, 0xCC,               # LD A,wf; OUT (CCh),A: zkoušený WF
+        0x3E, value, 0x32, 0x00, 0xD0,      # LD A,NW; LD (D000h),A
+        0x3E, 0x01, 0xD3, 0xCC, 0xD3, 0xCD,  # WF, RF 01h
         0x3A, 0x00, 0xD0,                   # LD A,(D000h)
         0x32, _RESULT & 0xFF, _RESULT >> 8,  # LD (6000h),A
-        0x3E, 0x01, 0xD3, 0xCC,             # WF zpět 01h
         0xD3, 0xE1,                         # OUT (E1h),A: D000h až FFFFh = RAM
         0x3E, 0x00, 0xD3, 0xCE,             # DMD 00h
     ])
@@ -59,24 +78,18 @@ def _write_read(emu, wf, value):
 
 
 def run(exe):
-    """Všechny kroky testu na jedné binárce. Vrací True = PASS."""
+    """Všechny případy na jedné binárce. Vrací True = PASS."""
     print(f"\n=== {exe.name} ===")
     tmp = Path(tempfile.mkdtemp(prefix="mz700_vram_wf_"))
     emu = None
     try:
         emu = h.PipeEmu(exe, tmp)
         h._setup(emu)
-        steps = (
-            (0x01, 0x0F, 0x0F, "WF SINGLE: the byte written"),
-            (0x21, 0x55, 0x5A, "WF XOR plane I: 0Fh xor 55h"),
-            (0x41, 0x80, 0xDA, "WF OR plane I: 5Ah or 80h"),
-            (0x61, 0x0A, 0xD0, "WF RESET plane I: DAh and not 0Ah"),
-            (0x01, 0x33, 0x33, "WF 01h again: written directly"),
-        )
-        for wf, value, expected, what in steps:
-            got = _write_read(emu, wf, value)
-            print(f"  WF {wf:02X}h, write {value:02X}h: read {got:02X}h (expected {expected:02X}h)")
-            h.check(got == expected, what)
+        for wf, preset, value, expected in _CASES:
+            got = _case(emu, wf, preset, value)
+            print(f"  WF {wf:02X}h, PR {preset:02X}h, NW {value:02X}h: read {got:02X}h"
+                  f" (a real MZ-800 {expected:02X}h)")
+            h.check(got == expected, f"WF {wf:02X}h as on a real MZ-800")
         return True
     except h.TestFailure as e:
         print(f"  FAILED: {e}")
