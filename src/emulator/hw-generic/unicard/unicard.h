@@ -526,11 +526,26 @@ extern "C" {
      */
     extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
-    /* Čekací stavy karty na jedno čtení portu dat 51h (uc3 v0.37). Změřeno 2026-11-24 na Unicard mk3b
-     * (F429, fw 0.38b1, MZ-800 PAL) modulem busload Unicard Manageru 3.0: INIR 27,2 T na bajt proti 23,2 T
-     * emulátoru, INI po 42 T 55,4 proti 51,2 T, tedy asi 4 T (průměr i s občasným načtením stránky 4 KB
-     * ze SD). Čtení stavu (50h) a zápisy změřené nejsou a čekání nemají. */
-#define UNICARD_UC3_REV2_DATA_READ_WAIT 4
+    /* Čekací stavy karty uc3 (T na jeden přístup na port 50h/51h): karta drží Z80 ve WAIT, dokud přístup
+     * neobslouží. Rychlou cestu obslouží firmware v přerušení sběrnice (zápis STSR a GDGSYNC na 50h, RKEY,
+     * čtení dat otevřeného souboru bez převodu SharpASCII), ostatní čeká na jeho hlavní smyčku (čtení stavu,
+     * příkazy, zápis dat, výstup příkazů, adresář, GETCONFIG); stejně od fw 0.26 (src/interrupt.c iowrEMU,
+     * emu_MZFREPO_read_interrupt), RKEY od 0.37. Změřeno 2026-11-24 na Unicard mk3b (F429) a MZ-800 PAL programem
+     * IOWAIT Unicard Manageru 3.0 (src/test/iowait.asm: 65 536 přístupů hned za sebou proti neobsazenému portu,
+     * čítač 8253 z HSYNC): v0.26 podle fw 0.23 (oficiální firmware dlouhá léta), v0.37 podle fw 0.38b1. Hlavní
+     * smyčka je průměr při kartě v klidu; čtení stránky souboru ze SD a delší práce příkazů (OPEN, MOUNT...)
+     * se nepočítá. Čtení souboru v0.37 modulem busload (INIR 27,2 T na bajt proti 23,2 T), v0.26 nezměřené:
+     * odhad o 1 T méně (rozdíl zápisu STSR 2,1 a 3,0 T). */
+#define UNICARD_UC3_026_WAIT_STATUS_READ 21     /* 20,5 T */
+#define UNICARD_UC3_026_WAIT_DATA_READ 22       /* 21,9 T */
+#define UNICARD_UC3_026_WAIT_FILE_READ 3        /* odhad */
+#define UNICARD_UC3_026_WAIT_WRITE_FAST 2       /* 2,1 T */
+#define UNICARD_UC3_026_WAIT_WRITE 19           /* 18,7 T */
+#define UNICARD_UC3_037_WAIT_STATUS_READ 28     /* 28,0 T */
+#define UNICARD_UC3_037_WAIT_DATA_READ 33       /* 33,1 T */
+#define UNICARD_UC3_037_WAIT_FILE_READ 4        /* 4,0 T (busload) */
+#define UNICARD_UC3_037_WAIT_WRITE_FAST 3       /* 3,0 T */
+#define UNICARD_UC3_037_WAIT_WRITE 23           /* 22,9 T */
 
     /* Nejdelší složka cesty (znaků), kterou karta přijme: FatFS firmwaru mk3b s FF_MAX_LFN 32. */
 #define UNICARD_UC3_MAX_LFN 32

@@ -2352,6 +2352,34 @@ static uint8_t unimgr_read_STATUS ( void ) {
 }
 
 
+/**
+ * Obslouží firmware karty příští přístup v přerušení sběrnice (rychlá cesta), nebo drží Z80 ve WAIT, než ho vezme
+ * hlavní smyčka? Podle firmwaru mk3b (src/interrupt.c iowrEMU a čtecí dispečer, emu_MZFREPO_read_interrupt),
+ * stejně od 0.26, RKEY od 0.37. Volat před přístupem; čekací stavy podle toho přidá unicard.c.
+ *
+ * Čtení: stav vždy hlavní smyčka; data rychle po RKEY a z otevřeného souboru (bez výstupu příkazu, adresáře,
+ * GETCONFIG, výpisu cloudu a COPY na pozadí; převod SharpASCII umí jen pomalá cesta).
+ */
+int unimgr_read_fast ( en_UNIMGR_ADDR addr ) {
+    if ( addr != UNIMGR_ADDR_DATA ) return 0;
+    if ( s_rkey.req ) return 1;
+    if ( s_cloud.op || unicard_copy_active ( ) ) return 0;
+    if ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) return 0;
+    if ( unimgr_cfg_active ( ) || s_cloud.dir ) return 0;
+    if ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) return 0;
+    if ( EXIT_SUCCESS != unicard_file_is_open ( &g_unimgr.file ) ) return 0;
+    return ( g_unimgr.file_mode & FA_UNIMGR_ASCII_CNV ) ? 0 : 1;
+}
+
+
+/* Zápis: rychle jen STSR a GDGSYNC na port příkazů (firmware (data & F7h) == 03h) a RKEY (UC API rev 2). */
+int unimgr_write_fast ( en_UNIMGR_ADDR addr, uint8_t data ) {
+    if ( addr == UNIMGR_ADDR_DATA ) return 0;
+    if ( ( cmdSTSR == data ) || ( cmdGDGSYNC == data ) ) return 1;
+    return ( ( cmdRKEY == data ) && unicard_get_api_rev2 ( ) ) ? 1 : 0;
+}
+
+
 uint8_t unimgr_read_byte ( en_UNIMGR_ADDR addr ) {
     if ( ( addr == UNIMGR_ADDR_DATA ) && s_rkey.req ) {
         s_rkey.req = 0;

@@ -50,6 +50,8 @@ extern "C" {
     /* bus_high: horní bajt adresy portu (OUT (C),A: registr B), GDGSYNC ho čte */
     extern void unimgr_write_byte ( en_UNIMGR_ADDR addr, uint8_t data, uint8_t bus_high );
     extern uint8_t unimgr_read_byte ( en_UNIMGR_ADDR addr );
+    extern int unimgr_read_fast ( en_UNIMGR_ADDR addr );
+    extern int unimgr_write_fast ( en_UNIMGR_ADDR addr, uint8_t data );
 
 #ifdef __cplusplus
 }

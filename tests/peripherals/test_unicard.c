@@ -851,36 +851,70 @@ void test_unicard_dns_resolving(void)
 }
 
 
-/* uc3 v0.37: čtení portu dat 51h prodlouží cyklus CPU o čekací stavy karty
- * (změřeno 4 T); stav 50h, v0.26 a přístup debuggeru ne. */
-void test_unicard_rev2_data_read_wait(void)
+/* Čekací stavy přidané od posledního volání (a vynulování). */
+static uint32_t uc_waited(void)
 {
-    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    uint32_t w = g_mzarch_main.instruction_wait_tstates;
+    g_mzarch_main.instruction_wait_tstates = 0;
+    return w;
+}
 
+/* Čekací stavy jedné verze uc3: rychlá cesta (čtení otevřeného souboru, STSR, RKEY), hlavní smyčka
+ * (stav, příkaz, výstup příkazu, zápis dat, soubor s převodem SharpASCII), přístup debuggeru nic. */
+static void uc3_wait_check(int rev2, uint32_t status_read, uint32_t data_read, uint32_t file_read,
+                           uint32_t write_fast, uint32_t write)
+{
+    unicard_set_api_rev2(rev2);
     create_test_file("wait.bin", 4);
     uc_send_cmd(cmdRESET);
     uc_send_cmd(cmdOPEN);
     uc_send_data(0x01);
     uc_send_str("wait.bin");
-    g_mzarch_main.instruction_wait_tstates = 0;
+    uc_waited();
     uc_recv_data();
-    uc_master_status();
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, g_mzarch_main.instruction_wait_tstates, "v0.26 bez čekání");
-
-    unicard_set_api_rev2(1);
-    uc_recv_data();
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
-                                     "v0.37: čtení dat + 4 T");
-    uc_master_status();
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
-                                     "čtení stavu bez čekání (nezměřeno)");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(file_read, uc_waited(), "čtení otevřeného souboru: rychlá cesta");
+    unicard_read_byte(UNICARD_PORT_CMD);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(status_read, uc_waited(), "čtení stavu: hlavní smyčka");
+    uc_send_cmd(cmdSTSR);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(write_fast, uc_waited(), "STSR: rychlá cesta");
     devbus_debugger_access_begin();
     uc_recv_data();
+    unicard_read_byte(UNICARD_PORT_CMD);
     devbus_debugger_access_end();
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_REV2_DATA_READ_WAIT, g_mzarch_main.instruction_wait_tstates,
-                                     "přístup debuggeru bez čekání");
-    g_mzarch_main.instruction_wait_tstates = 0;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, uc_waited(), "přístup debuggeru bez čekání");
+    uc_send_cmd(cmdREVD);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(write, uc_waited(), "příkaz: hlavní smyčka");
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(data_read, uc_waited(), "výstup příkazu: hlavní smyčka");
+    uc_send_data(0x00);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(write, uc_waited(), "zápis dat: hlavní smyčka");
     uc_close();
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01 | 0x20);
+    uc_send_str("wait.bin");
+    uc_waited();
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(data_read, uc_waited(), "soubor s převodem SharpASCII: hlavní smyčka");
+    uc_close();
+    uc_waited();
+}
+
+/* Čekací stavy karty uc3 (změřené programem IOWAIT): v0.26 podle fw 0.23, v0.37 podle fw 0.38b1;
+ * v0.37 RKEY rychle (zápis i čtení kódu). */
+void test_unicard_uc3_wait_states(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc3_wait_check(0, UNICARD_UC3_026_WAIT_STATUS_READ, UNICARD_UC3_026_WAIT_DATA_READ,
+                   UNICARD_UC3_026_WAIT_FILE_READ, UNICARD_UC3_026_WAIT_WRITE_FAST, UNICARD_UC3_026_WAIT_WRITE);
+    uc3_wait_check(1, UNICARD_UC3_037_WAIT_STATUS_READ, UNICARD_UC3_037_WAIT_DATA_READ,
+                   UNICARD_UC3_037_WAIT_FILE_READ, UNICARD_UC3_037_WAIT_WRITE_FAST, UNICARD_UC3_037_WAIT_WRITE);
+    uc_send_cmd(cmdRESET);
+    uc_waited();
+    uc_send_cmd(cmdRKEY);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_037_WAIT_WRITE_FAST, uc_waited(), "v0.37 RKEY: rychlá cesta");
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_037_WAIT_FILE_READ, uc_waited(), "kód RKEY: rychlá cesta");
 }
 
 
@@ -4269,7 +4303,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_status_eof_at_size);
     RUN_TEST(test_unicard_uc3_long_name_invalid);
     RUN_TEST(test_unicard_dns_resolving);
-    RUN_TEST(test_unicard_rev2_data_read_wait);
+    RUN_TEST(test_unicard_uc3_wait_states);
     RUN_TEST(test_unicard_cloud_dir_ini_rev2);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);

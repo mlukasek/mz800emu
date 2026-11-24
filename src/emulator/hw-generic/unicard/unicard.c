@@ -1213,18 +1213,6 @@ void unicard_reset ( void ) {
 }
 
 
-void unicard_write_byte ( uint16_t port, uint8_t data ) {
-    switch ( port & 0xff ) {
-        case 0x50:
-        case 0x51:
-            unimgr_write_byte ( port & 0x01, data, (uint8_t) ( port >> 8 ) );
-            break;
-        default:
-            fprintf ( stderr, "%s():%d - Unsupported Unicard port 0x%02x\n", __func__, __LINE__, port );
-    };
-}
-
-
 /* Prodlouží aktuální cyklus CPU o čekací stavy karty (vzor mz700_devbus_cpu_wait).
  * Přístup debuggeru (MCP io_read, port v breakpointu) neběží v cyklu CPU: nic. */
 static void unicard_cpu_wait ( unsigned tstates ) {
@@ -1235,18 +1223,52 @@ static void unicard_cpu_wait ( unsigned tstates ) {
 }
 
 
+/* Čekací stavy karty uc3 podle verze firmwaru (unicard.h, změřené programem IOWAIT): [0] v0.26, [1] v0.37.
+ * Rychlou cestu určí unimgr_read_fast a unimgr_write_fast. uc1 bez čekání (neměřený). */
+static const struct {
+    uint8_t status_read, data_read, file_read, write_fast, write;
+} g_unicard_uc3_wait[2] = {
+    { UNICARD_UC3_026_WAIT_STATUS_READ, UNICARD_UC3_026_WAIT_DATA_READ, UNICARD_UC3_026_WAIT_FILE_READ,
+      UNICARD_UC3_026_WAIT_WRITE_FAST, UNICARD_UC3_026_WAIT_WRITE },
+    { UNICARD_UC3_037_WAIT_STATUS_READ, UNICARD_UC3_037_WAIT_DATA_READ, UNICARD_UC3_037_WAIT_FILE_READ,
+      UNICARD_UC3_037_WAIT_WRITE_FAST, UNICARD_UC3_037_WAIT_WRITE },
+};
+#define UNICARD_UC3_WAIT ( g_unicard_uc3_wait[unicard_get_api_rev2 ( ) ? 1 : 0] )
+
+
+void unicard_write_byte ( uint16_t port, uint8_t data ) {
+    switch ( port & 0xff ) {
+        case 0x50:
+        case 0x51:
+        {
+            int fast = unimgr_write_fast ( port & 0x01, data );
+            unimgr_write_byte ( port & 0x01, data, (uint8_t) ( port >> 8 ) );
+            if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
+                unicard_cpu_wait ( fast ? UNICARD_UC3_WAIT.write_fast : UNICARD_UC3_WAIT.write );
+            };
+            break;
+        }
+        default:
+            fprintf ( stderr, "%s():%d - Unsupported Unicard port 0x%02x\n", __func__, __LINE__, port );
+    };
+}
+
+
 uint8_t unicard_read_byte ( uint16_t port ) {
     uint8_t ret = 0x00;
 
     switch ( port & 0xff ) {
         case 0x50:
         case 0x51:
+        {
+            int fast = unimgr_read_fast ( port & 0x01 );
             ret = unimgr_read_byte ( port & 0x01 );
-            /* uc3 v0.37: karta drží Z80 ve WAIT, než data připraví (změřeno jen čtení portu dat) */
-            if ( ( ( port & 0xff ) == 0x51 ) && unicard_get_api_rev2 ( ) ) {
-                unicard_cpu_wait ( UNICARD_UC3_REV2_DATA_READ_WAIT );
+            if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
+                unicard_cpu_wait ( ( ( port & 0xff ) == 0x50 ) ? UNICARD_UC3_WAIT.status_read
+                                   : fast ? UNICARD_UC3_WAIT.file_read : UNICARD_UC3_WAIT.data_read );
             };
             break;
+        }
         default:
             fprintf ( stderr, "%s():%d - Unsupported Unicard port 0x%02x\n", __func__, __LINE__, port );
     };
