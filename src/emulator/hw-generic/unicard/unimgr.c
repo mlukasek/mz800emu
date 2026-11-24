@@ -248,6 +248,7 @@
 #include "unicard_ini.h"
 #include "unimgr.h"
 #include "unicard_tcp.h"
+#include "unicard_net.h"
 #include "mzarch/mzarch.h"
 
 #ifdef UNICARD_EMULATED
@@ -269,7 +270,8 @@ typedef enum en_UNIMGR_CMDSTATE {
     UNIMGR_CMDSTATE_START = 0x03, // prikaz byl prave vlozen
     UNIMGR_CMDSTATE_PARAM = 0x04, // prijali jsme 1B parametru
     UNIMGR_CMDSTATE_PARAMOK = 0x05, // vsechny parametry byly vlozeny, GO!
-    UNIMGR_CMDSTATE_WORK = 0x06 // pracovni cyklus (nacteni dalsi polozky adresare :-)
+    UNIMGR_CMDSTATE_WORK = 0x06, // pracovni cyklus (nacteni dalsi polozky adresare :-)
+    UNIMGR_CMDSTATE_NETWAIT = 0x07 // NETCREATE/NETJOIN čeká na relay (stav IN_PROGRESS), unicard_net.c
 } en_UNIMGR_CMDSTATE;
 
 
@@ -1056,7 +1058,7 @@ static void do_cmdMOUNTS ( void ) {
  * cmdINFO (UC API rev 2) - informace o kartě a rozšířeních.
  *
  * Výstup 16 B: [0] revize rozšíření 2, [1] deska (mk3b), [3] příznaky MZPico
- * (01h cloud dostupný, 10h hodiny z NTP; NET 08h ne, emulace nemá relay NET),
+ * (01h cloud dostupný, 08h NET, 10h hodiny z NTP),
  * [8-9] příznaky UC (firmware 0.37 všechny), [10-11] přípona zkušebního
  * překladu (vydaný firmware 0, 0).
  */
@@ -1066,6 +1068,7 @@ static void do_cmdINFO ( void ) {
     g_unimgr.buf_byte[1] = UC_INFO_BOARD_MK3B;
     if ( unimgr_cloud_online ( ) ) g_unimgr.buf_byte[3] |= 0x01; // cloud dostupný (MZPico: Wi-Fi a cloud)
     if ( unicard_ntp_enabled ( ) ) g_unimgr.buf_byte[3] |= 0x10; // hodiny z NTP (jako MZPico)
+    g_unimgr.buf_byte[3] |= UNICARD_NET_INFO_FEATURE; // NET A0h-A9h (relay je vždy nastavená, jako na kartě)
     g_unimgr.buf_byte[8] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS & 0xff );
     g_unimgr.buf_byte[9] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS >> 8 );
     g_unimgr.buf = g_unimgr.buf_byte;
@@ -1229,6 +1232,57 @@ static int unimgr_cloud_busy ( int is_cmd, uint8_t data ) {
  * TCPSEND 85h: WORD length (bit 15 = now) and the data (X); TCPRECV 86h: WORD max in, WORD n and n bytes out
  * (n <= 253); DNSREQ 88h: the name (S); DNSRES 89h: 5 B out (status, IP).
  */
+/* NET: an error into status byte 2, or the output */
+static void do_cmdNET_finish ( int res, int len, const uint8_t *out ) {
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    if ( res ) {
+        g_unimgr.err_code = (uint8_t) res;
+        g_unimgr.sts_err = UNIMGR_STS_ERROR;
+        return;
+    };
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+    if ( len ) {
+        memcpy ( g_unimgr.buf_byte, out, (size_t) len );
+        g_unimgr.buf = g_unimgr.buf_byte;
+        g_unimgr.buf_count = (uint16_t) len;
+        g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+    };
+}
+
+
+/**
+ * NET A0h-A9h (UC API rev 2, firmware mk3b 0.30+): síťová hra přes relay, unicard_net.c. NETCREATE a NETJOIN
+ * čekají na relay ve fázi NETWAIT (stav bit 6), dokončí je čtení stavu (do_cmdNET_async).
+ */
+static void do_cmdNET ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    uint8_t out[UNICARD_NET_OUT_MAX];
+    int len = 0;
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        g_unimgr.param_format = unicard_net_param_format ( g_unimgr.cmd );
+        if ( g_unimgr.param_format[0] ) {
+            unimgr_input_params ( cmd_phase, 0 );
+            return;
+        };
+    };
+    int res = unicard_net_exec ( g_unimgr.cmd, g_unimgr.buf_byte, out, &len );
+    if ( -1 == res ) {
+        g_unimgr.cmd_phase = UNIMGR_CMDSTATE_NETWAIT;
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+        return;
+    };
+    do_cmdNET_finish ( res, len, out );
+}
+
+
+static void do_cmdNET_async ( void ) {
+    uint8_t out[UNICARD_NET_OUT_MAX];
+    int len = 0;
+    int res = unicard_net_async_poll ( out, &len );
+    if ( 0 == res ) return;
+    do_cmdNET_finish ( ( 1 == res ) ? 0 : res, len, out );
+}
+
+
 static void do_cmdTCP ( en_UNIMGR_CMDSTATE cmd_phase ) {
     uint8_t *b = g_unimgr.buf_byte;
     if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
@@ -1615,6 +1669,11 @@ static void unimgr_write_CMD ( uint8_t data ) {
     if ( unimgr_cloud_busy ( 1, data ) ) return;
     if ( unimgr_copy_busy ( 1, data ) ) return;
 
+    if ( UNIMGR_CMDSTATE_NETWAIT == g_unimgr.cmd_phase ) { // nový příkaz ruší čekající NETCREATE/NETJOIN
+        unicard_net_cancel ( );
+        g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    };
+
     g_unimgr.cmd = data;
     g_unimgr.sts_err = UNIMGR_STS_ERROR;
     unimgr_op_start ( );
@@ -1892,6 +1951,25 @@ static void unimgr_write_CMD ( uint8_t data ) {
             };
             break;
 
+        /* NET (UC API rev 2, unicard_net.c on the host's sockets) */
+        case cmdNETSTATUS:
+        case cmdNETCREATE:
+        case cmdNETJOIN:
+        case cmdNETLEAVE:
+        case cmdNETREADY:
+        case cmdNETSEND:
+        case cmdNETPOLL:
+        case cmdNETHASH:
+        case cmdNETMSG:
+        case cmdNETRECV:
+            if ( unicard_get_api_rev2 ( ) ) {
+                do_cmdNET ( UNIMGR_CMDSTATE_START );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+            };
+            break;
+
         /* TCP client and DNS (uc3, unicard_tcp.c on the host's sockets) */
         case cmdTCPSTATUS:
         case cmdTCPIP:
@@ -2027,6 +2105,16 @@ static void unimgr_write_param ( uint8_t data ) {
 
         case cmdSETCONFIG:
             do_cmdSETCONFIG ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdNETCREATE:
+        case cmdNETJOIN:
+        case cmdNETREADY:
+        case cmdNETSEND:
+        case cmdNETPOLL:
+        case cmdNETHASH:
+        case cmdNETMSG:
+            do_cmdNET ( UNIMGR_CMDSTATE_PARAMOK );
             break;
 
         default:
@@ -2198,6 +2286,12 @@ static uint8_t unimgr_read_DATA ( void ) {
             case cmdTCPSTATUS:
             case cmdTCPRECV:
             case cmdDNSRES:
+            case cmdNETSTATUS:
+            case cmdNETCREATE:
+            case cmdNETJOIN:
+            case cmdNETREADY:
+            case cmdNETPOLL:
+            case cmdNETRECV:
                 ret = unimgr_output_data_bin ( );
                 break;
 
@@ -2284,6 +2378,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
             } else if ( unicard_copy_active ( ) ) {
                 unimgr_copy_poll ( );
             };
+            if ( UNIMGR_CMDSTATE_NETWAIT == g_unimgr.cmd_phase ) do_cmdNET_async ( ); // odpověděla už relay?
 
             if ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ret |= 0x01; // 0. bit - BUSY(paramRQ)=1
 
@@ -2304,6 +2399,7 @@ static uint8_t unimgr_read_STATUS ( void ) {
             };
 
             if ( unicard_copy_active ( ) || s_cloud.op ) ret |= 0x40; // 6. bit - IN_PROGRESS (COPY, cloud)
+            if ( UNIMGR_CMDSTATE_NETWAIT == g_unimgr.cmd_phase ) ret |= 0x40; // a NETCREATE/NETJOIN čeká na relay
 
             if ( UNIMGR_STS_ERROR == g_unimgr.sts_err ) ret |= 0x80; // 7. bit - ERROR=1
 

@@ -903,6 +903,15 @@ extern "C" {
     /** @brief Nastaví INI rkey_file (prázdné nebo NULL = bez vzdálených kláves). */
     extern void unicard_set_rkey_file ( const char *path );
 
+    /**
+     * @brief Relay NET z INI [UNICARD] net_relay (host[:port], JSON řádky přes TCP, jako fork MZPico),
+     * proměnná prostředí MZ800EMU_UNICARD_NET_RELAY má přednost. Prázdné = podle network.cfg na SD jako karta.
+     */
+    extern const char* unicard_net_relay ( void );
+
+    /** @brief Nastaví INI net_relay (prázdné nebo NULL = podle network.cfg). */
+    extern void unicard_set_net_relay ( const char *relay );
+
     /** @brief Začíná cesta "cloud:"? */
     extern int unicard_cloud_is_path ( const char *path );
 

@@ -23,6 +23,7 @@
 #include "hw-generic/unicard/unimgr_commands.h"
 #include "hw-generic/unicard/unimgr.h"
 #include "hw-generic/unicard/unicard_tcp.h"
+#include "hw-generic/unicard/unicard_net.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
 #include "mzarch/mzarch.h"
@@ -129,6 +130,9 @@ void tearDown(void)
     unicard_rtc_reset();
     /* fw 0.26 (testy UC API rev 2 si ho zapínají samy). */
     unicard_set_api_rev2(0);
+    /* NET: zase se sokety a relay podle network.cfg. */
+    unicard_net_test_mode(0);
+    unicard_set_net_relay("");
 
     /* Smazat tmpdir rekurzivně. */
     if (s_test_sd_root) {
@@ -3100,7 +3104,7 @@ void test_unicard_info_rev2(void)
     unicard_set_api_rev2(0);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, info[0], "revize rozšíření 2");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_INFO_BOARD_MK3B, info[1], "deska mk3b");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[3], "bez Wi-Fi, NET, cloudu a NTP");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_INFO_FEATURE, info[3], "jen NET (relay vždy nastavená), bez Wi-Fi, cloudu a NTP");
     uint16_t flags = info[8] | (info[9] << 8);
     TEST_ASSERT_EQUAL_HEX16_MESSAGE(0x01FF, flags, "příznaky UC jako firmware 0.37 (i cloud bez sítě)");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[10], "vydaný firmware: bez přípony [10]");
@@ -4286,6 +4290,316 @@ void test_unicard_rkey_rev2(void)
 }
 
 
+/* ================================================================
+ * NET A0h-A9h (UC API rev 2, unicard_net.c): bez soketů, relay
+ * "připojená" hned, odeslané bajty sbírá test, odpovědi podstrkuje.
+ * ================================================================ */
+
+static void net_begin(const char *relay)
+{
+    unicard_set_api_rev2(1);
+    unicard_set_net_relay(relay);
+    unicard_net_test_mode(1);
+    uc_send_cmd(cmdRESET);
+}
+
+static void net_cmd(uint8_t cmd, const uint8_t *p, int n)
+{
+    uc_send_cmd(cmd);
+    for (int i = 0; i < n; i++) uc_send_data(p[i]);
+}
+
+static void net_out(uint8_t *out, int n)
+{
+    for (int i = 0; i < n; i++) out[i] = uc_recv_data();
+}
+
+static void net_relay_text(const char *text)
+{
+    unicard_net_test_recv((const uint8_t *)text, (int)strlen(text));
+}
+
+/* Odeslané bajty od posledního volání jako řetězec. */
+static const char *net_sent(void)
+{
+    static char buf[4096];
+    int n = unicard_net_test_sent((uint8_t *)buf, sizeof(buf) - 1);
+    buf[n] = 0;
+    return buf;
+}
+
+/* NETCREATE hra 1234h, build 0102h, 2 sloty po 1 B, nastavení AA BB. */
+static const uint8_t k_net_create[23] = { 0x34, 0x12, 0x02, 0x01, 2, 1, 2, 0xAA, 0xBB };
+
+static void net_status8(uint8_t *st)
+{
+    net_cmd(cmdNETSTATUS, NULL, 0);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_DOUTRQ | UNICARD_STS_ERROR),
+                                   "NETSTATUS: výstup bez chyby");
+    net_out(st, 8);
+}
+
+static uint8_t net_error(void)
+{
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "čekaná chyba");
+    return uc_read_status_byte(2);
+}
+
+
+/* INFO hlásí NET (bajt 3, 08h) jen u v0.37; fw 0.26 příkazy NET nezná. */
+void test_unicard_net_info(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t info[16];
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdNETSTATUS);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "fw 0.26: A0h = ERROR");
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_NET_INFO_FEATURE, info[3] & UNICARD_NET_INFO_FEATURE, "v0.37: INFO NET");
+}
+
+
+/* Hra přes relay s JSON řádky (net_relay): místnost, ready a start, vstupy snímků, hash, zprávy, odchod. */
+void test_unicard_net_tcp_game(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t st[8], out[34];
+    net_begin("127.0.0.1:8766");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[0], "bez místnosti READY");
+
+    net_cmd(cmdNETCREATE, k_net_create, 23);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_PROGRESS, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_DOUTRQ),
+                                   "CREATE čeká na relay");
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"create\",\"game\":4660,\"build\":258,\"slots\":2,\"bytes\":1,\"settings\":\"aabb\"}\n",
+                             net_sent());
+    net_relay_text("{\"op\":\"room\",\"code\":\"QWER\",\"slot\":0,\"slots\":2,\"bytes\":1,\"settings\":\"aabb\"}\n");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_DOUTRQ),
+                                   "CREATE hotový");
+    net_out(out, 6);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("QWER\r\0", out, 6, "kód místnosti, 0Dh, slot 0");
+
+    net_relay_text("{\"op\":\"members\",\"count\":2,\"ready\":2}\n");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, st[0], "IN_ROOM");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, st[2], "dva členové");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, st[3], "ready maska");
+
+    uint8_t one = 1;
+    net_cmd(cmdNETREADY, &one, 1);
+    net_out(out, 4);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\xff\xff\xff\xff", out, 4, "READY před startem");
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"ready\",\"ready\":1}\n", net_sent());
+    net_relay_text("{\"op\":\"start\",\"seed\":4660,\"frame\":5,\"mask\":3}\n");
+    net_cmd(cmdNETREADY, &one, 1);
+    net_out(out, 4);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\x34\x12\x05\x00", out, 4, "seed a první snímek");
+    net_sent();
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, st[0], "RUNNING");
+
+    const uint8_t send[6] = { 5, 0, 0x11, 0x99, 0x99, 0x99 };
+    net_cmd(cmdNETSEND, send, 6);
+    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"input\",\"frame\":5,\"data\":\"11\"}\n", net_sent());
+    const uint8_t poll5[2] = { 5, 0 };
+    net_cmd(cmdNETPOLL, poll5, 2);
+    net_out(out, 4);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\x04\x00\x00\x00", out, 4, "jen vlastní vstup: dostupný snímek 4 (před prvním), data 0");
+    net_relay_text("{\"op\":\"input\",\"frame\":5,\"slot\":1,\"data\":\"22\"}\n");
+    net_cmd(cmdNETPOLL, poll5, 2);
+    net_out(out, 4);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\x05\x00\x11\x22", out, 4, "snímek 5: oba sloty");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[5], "jeden hotový snímek");
+
+    const uint8_t hash[4] = { 5, 0, 0xcd, 0xab };
+    net_cmd(cmdNETHASH, hash, 4);
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"hash\",\"frame\":5,\"hash\":43981}\n", net_sent());
+
+    uint8_t msg[34] = { 0xff, 3, 1, 2, 3 };
+    net_cmd(cmdNETMSG, msg, 34);
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"msg\",\"to\":-1,\"data\":\"010203\"}\n", net_sent());
+    net_relay_text("{\"op\":\"msg\",\"from\":1,\"data\":\"abcd\"}\n");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[6], "jedna zpráva čeká");
+    net_cmd(cmdNETRECV, NULL, 0);
+    net_out(out, 34);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\x01\x02\xab\xcd", out, 4, "zpráva od slotu 1");
+    net_cmd(cmdNETRECV, NULL, 0);
+    net_out(out, 34);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xff, out[0], "žádná další zpráva");
+
+    net_relay_text("{\"op\":\"desync\",\"frame\":5}\n");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, st[0], "DESYNC");
+
+    net_cmd(cmdNETLEAVE, NULL, 0);
+    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"leave\"}\n", net_sent());
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[0], "po odchodu READY");
+    net_cmd(cmdNETLEAVE, NULL, 0);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_NOROOM, net_error(), "LEAVE bez místnosti");
+    net_cmd(cmdNETSEND, send, 6);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_NOROOM, net_error(), "SEND bez hry");
+}
+
+
+/* JOIN: špatný kód, chyba relay, 15 s bez odpovědi, zrušení novým příkazem, reset počítače. */
+void test_unicard_net_join_errors(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t st[8], out[20];
+    net_begin("127.0.0.1");
+    net_cmd(cmdNETJOIN, (const uint8_t *)"\x34\x12\x02\x01", 4);
+    uc_send_str("AB-C");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_PARAM, net_error(), "kód jen písmena a číslice");
+
+    net_cmd(cmdNETJOIN, (const uint8_t *)"\x34\x12\x02\x01", 4);
+    uc_send_str("WXYZ");
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"join\",\"game\":4660,\"build\":258,\"code\":\"WXYZ\"}\n", net_sent());
+    net_relay_text("{\"op\":\"error\",\"code\":7,\"text\":\"no such room\"}\n");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_ROOM, net_error(), "chyba od relay");
+
+    net_cmd(cmdNETJOIN, (const uint8_t *)"\x34\x12\x02\x01", 4);
+    uc_send_str("WXYZ");
+    unicard_net_test_advance(14000);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_PROGRESS, uc_master_status() & UNICARD_STS_PROGRESS, "14 s: čeká dál");
+    unicard_net_test_advance(2000);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_NOLINK, net_error(), "16 s bez odpovědi: NOLINK");
+
+    net_cmd(cmdNETJOIN, (const uint8_t *)"\x34\x12\x02\x01", 4);
+    uc_send_str("WXYZ");
+    net_status8(st);                                /* nový příkaz čekání zruší */
+    net_relay_text("{\"op\":\"room\",\"code\":\"WXYZ\",\"slot\":1,\"slots\":2,\"bytes\":1,\"settings\":\"aabb\"}\n");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_DOUTRQ),
+                                   "zrušený JOIN už nic nevrátí");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, st[0], "místnost stav drží");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[1], "slot 1");
+
+    net_cmd(cmdNETJOIN, (const uint8_t *)"\x34\x12\x02\x01", 4);
+    uc_send_str("WXYZ");
+    net_relay_text("{\"op\":\"room\",\"code\":\"WXYZ\",\"slot\":1,\"slots\":2,\"bytes\":1,\"settings\":\"aabb\"}\n");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_DOUTRQ),
+                                   "JOIN hotový (dokončí ho čtení stavu)");
+    net_out(out, 20);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("\x01\x02\x01\x02\xaa\xbb", out, 6, "JOIN: slot, sloty, bajty, nastavení");
+
+    unicard_reset();                                /* reset počítače: pryč z místnosti */
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, st[0], "po resetu READY");
+}
+
+
+/* Jeden maskovaný rámec od karty: kód a data, vrací délku rámce. */
+static int net_ws_frame(const uint8_t *b, int n, int *op, char *data)
+{
+    TEST_ASSERT_TRUE_MESSAGE(n >= 6, "rámec");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, b[0] & 0x80, "FIN");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, b[1] & 0x80, "rámec klienta maskovaný");
+    *op = b[0] & 0x0f;
+    int len = b[1] & 0x7f, h = 2;
+    if (126 == len) {
+        len = (b[2] << 8) | b[3];
+        h = 4;
+    }
+    const uint8_t *m = &b[h];
+    h += 4;
+    for (int i = 0; i < len; i++) data[i] = (char)(b[h + i] ^ m[i & 3]);
+    data[len] = 0;
+    return h + len;
+}
+
+/* Rámec od relay (nemaskovaný). */
+static void net_ws_recv(uint8_t first, const char *data)
+{
+    uint8_t b[200];
+    int len = (int)strlen(data);
+    b[0] = first;
+    b[1] = (uint8_t)len;
+    memcpy(&b[2], data, (size_t)len);
+    unicard_net_test_recv(b, len + 2);
+}
+
+
+/* WebSocket (výchozí relay api.mzpico.com): Upgrade, řádky jako textové rámce, ping, zpráva po částech, close,
+ * odmítnutí. */
+void test_unicard_net_websocket(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t st[8], out[6], raw[512];
+    char data[256];
+    int op;
+    net_begin("");
+    net_cmd(cmdNETCREATE, k_net_create, 23);
+    const char *req = net_sent();
+    TEST_ASSERT_EQUAL_STRING_LEN("GET /net?game=4660&create=1 HTTP/1.1\r\nHost: api.mzpico.com\r\n", req, 60);
+    TEST_ASSERT_NOT_NULL(strstr(req, "Upgrade: websocket\r\n"));
+    TEST_ASSERT_NOT_NULL(strstr(req, "Sec-WebSocket-Version: 13\r\n"));
+    net_relay_text("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    int n = unicard_net_test_sent(raw, sizeof(raw));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(n, net_ws_frame(raw, n, &op, data), "jeden rámec");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, op, "textový rámec");
+    TEST_ASSERT_EQUAL_STRING("{\"op\":\"create\",\"game\":4660,\"build\":258,\"slots\":2,\"bytes\":1,\"settings\":\"aabb\"}", data);
+
+    net_ws_recv(0x81, "{\"op\":\"room\",\"code\":\"ZXCV\",\"slot\":0,\"slots\":2,\"bytes\":1}");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_PROGRESS | UNICARD_STS_DOUTRQ),
+                                   "CREATE přes WebSocket hotový");
+    net_out(out, 6);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE("ZXCV\r\0", out, 6, "CREATE přes WebSocket");
+
+    net_ws_recv(0x89, "hi");                        /* ping */
+    n = unicard_net_test_sent(raw, sizeof(raw));
+    net_ws_frame(raw, n, &op, data);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(10, op, "pong");
+    TEST_ASSERT_EQUAL_STRING("hi", data);
+
+    net_ws_recv(0x01, "{\"op\":\"members\",");     /* zpráva ve dvou rámcích */
+    net_ws_recv(0x80, "\"count\":3,\"ready\":1}");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, st[2], "zpráva po částech");
+
+    uint8_t close[4] = { 0x88, 2, 0x03, 0xe8 };
+    unicard_net_test_recv(close, 4);
+    n = unicard_net_test_sent(raw, sizeof(raw));
+    net_ws_frame(raw, n, &op, data);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(8, op, "odpověď na close");
+    net_status8(st);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(5, st[0], "spojení zavřené: DROPPED");
+
+    net_cmd(cmdNETCREATE, k_net_create, 23);
+    net_sent();
+    net_relay_text("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_NET_ERR_NOLINK, net_error(), "relay odmítla Upgrade");
+}
+
+
+/* Relay z network.cfg jako karta: NETRELAYADDR + NETRELAYPORT = JSON řádky, NETRELAY ws://jméno:port. */
+void test_unicard_net_cfg(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    write_unicard_cfg("network.cfg", "NETRELAY=ws://relay.example:8080/x\r\n");
+    net_begin("");
+    net_cmd(cmdNETCREATE, k_net_create, 23);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(net_sent(), "\r\nHost: relay.example:8080\r\n"), "NETRELAY ws://jméno:port");
+
+    write_unicard_cfg("network.cfg", "NETRELAY=relay.example\r\nNETRELAYADDR=10.0.0.7\r\nNETRELAYPORT=9000\r\n");
+    net_begin("");
+    net_cmd(cmdNETCREATE, k_net_create, 23);
+    TEST_ASSERT_EQUAL_STRING_LEN_MESSAGE("{\"op\":\"create\"", net_sent(), 14, "NETRELAYADDR: JSON řádky, ne HTTP");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -4445,6 +4759,11 @@ int main(int argc, char *argv[])
     /* UC API rev 2: RESTART 9Bh. */
     RUN_TEST(test_unicard_restart_rev2);
     RUN_TEST(test_unicard_rkey_rev2);
+    RUN_TEST(test_unicard_net_info);
+    RUN_TEST(test_unicard_net_tcp_game);
+    RUN_TEST(test_unicard_net_join_errors);
+    RUN_TEST(test_unicard_net_websocket);
+    RUN_TEST(test_unicard_net_cfg);
 
     int result = UNITY_END();
 

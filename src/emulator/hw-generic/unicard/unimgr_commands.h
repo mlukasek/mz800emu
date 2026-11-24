@@ -438,6 +438,19 @@ extern "C" {
 #define cmdLISTVOL      0x90    // svazky jako MZPico: "sd:" 0Dh, s cloudem i "cloud:" 0Dh
 #define cmdRKEY         0x9C    // vzdálená klávesa: příští čtení dat (51h) vrátí kód z fronty karty, 0 = žádná
 
+/* NET (uc3 v0.37, mk3b fw 0.30+, MZPico): síťová hra přes relay, unicard_net.c,
+ * BomberNet docs/net-protocol.md. */
+#define cmdNETSTATUS    0xA0    // 8 B: stav, slot, členové, ready, rtt, snímky, zprávy, chyba
+#define cmdNETCREATE    0xA1    // hra W, build W, sloty, bajty, délka, 16 B nastavení: kód (4 + 0Dh), slot
+#define cmdNETJOIN      0xA2    // hra W, build W, str kód: 20 B
+#define cmdNETLEAVE     0xA3
+#define cmdNETREADY     0xA4    // 1 B: seed W, první snímek W (FFFFh, FFFFh než všichni)
+#define cmdNETSEND      0xA5    // snímek W, 4 B vstup
+#define cmdNETPOLL      0xA6    // snímek W: dostupný W, sloty × bajty
+#define cmdNETHASH      0xA7    // snímek W, hash W
+#define cmdNETMSG       0xA8    // komu, délka, 32 B
+#define cmdNETRECV      0xA9    // 34 B: od (FFh = nic), délka, 32 B
+
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
 #define UC_INFO_MOUNTS      0x0002  // MOUNTS 98h

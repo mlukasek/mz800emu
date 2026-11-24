@@ -44,6 +44,7 @@
 #include "unicard.h"
 #include "unicard_ini.h"
 #include "unimgr.h"
+#include "unicard_net.h"
 #include "replay.h"
 #include "MGR_V24_MZF.h"
 #include "MGR800_V211B_MZF.h"
@@ -72,6 +73,7 @@ static CFGELM *g_elm_connected;
 static CFGELM *g_elm_sd_root;
 static CFGELM *g_elm_cloud_dir;
 static CFGELM *g_elm_rkey_file;
+static CFGELM *g_elm_net_relay;
 static CFGELM *g_elm_readonly;
 static CFGELM *g_elm_fw_version;
 static CFGELM *g_elm_runtime_check_on_connect;
@@ -1109,6 +1111,7 @@ void unicard_init ( void ) {
      * konfigurace jako sd_root. Proměnné prostředí mají přednost. */
     g_elm_cloud_dir = cfgmodule_register_new_element ( cmod, "cloud_dir", CFGENTYPE_TEXT, "" );
     g_elm_rkey_file = cfgmodule_register_new_element ( cmod, "rkey_file", CFGENTYPE_TEXT, "" );
+    g_elm_net_relay = cfgmodule_register_new_element ( cmod, "net_relay", CFGENTYPE_TEXT, "" );
 
     /* Default R/W (0) - existující uživatelé bez záznamu si nepoznají
      * žádnou změnu chování. Bind oba směry pro persistenci přes
@@ -1196,6 +1199,7 @@ void unicard_exit ( void ) {
 void unicard_reset ( void ) {
     if ( !UNICARD_TEST_IS_CONNECTED ) return;
     unimgr_reset ( );
+    unicard_net_reset ( ); // NET: reset počítače opustí místnost a zavře spojení s relay (firmware mk3b)
     unimgr_rkey_clear ( ); // vzdálené klávesy z doby před resetem zahodit (firmware mk3b 0.37)
 
     /* QD bootstrap remount na machine reset:
@@ -3229,6 +3233,18 @@ void unicard_set_cloud_dir ( const char *path ) {
 
 void unicard_set_rkey_file ( const char *path ) {
     cfgelement_set_text_value ( g_elm_rkey_file, path ? path : "" );
+}
+
+
+const char* unicard_net_relay ( void ) {
+    const char *env = g_getenv ( "MZ800EMU_UNICARD_NET_RELAY" );
+    if ( env && env[0] ) return env;
+    return g_elm_net_relay ? cfgelement_get_text_value ( g_elm_net_relay ) : "";
+}
+
+
+void unicard_set_net_relay ( const char *relay ) {
+    if ( g_elm_net_relay ) cfgelement_set_text_value ( g_elm_net_relay, relay ? relay : "" );
 }
 
 

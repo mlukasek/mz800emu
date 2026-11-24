@@ -627,6 +627,20 @@ if(Python3_FOUND)
         SKIP_RETURN_CODE 77
     )
 
+    # Unicard uc3 v0.37: NET A0h-A9h přes skutečné sokety, dva emulátory a
+    # relay v testu (JSON řádky přes TCP i WebSocket, jen 127.0.0.1). Bez binárky 77.
+    add_test(
+        NAME    mcp_unicard_net
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_unicard_net.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(mcp_unicard_net PROPERTIES
+        LABELS  "e2e;mcp;pipe;unicard"
+        TIMEOUT 180
+        SKIP_RETURN_CODE 77
+    )
+
     # Záznamy vstupů pořízené verzí 1564848f (tests/data/replay) při 100 %
     # a 150 %: přehrání musí doběhnout do konce. Hlídá, že termín 20ms
     # události u starého snapshotu zůstává podle původní verze a že klíč
