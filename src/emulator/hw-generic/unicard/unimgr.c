@@ -1608,12 +1608,10 @@ static void unimgr_write_CMD ( uint8_t data ) {
                 g_unimgr.buf = (uint8_t*) FIRMWARE_REVISION;
                 g_unimgr.buf_count = strlen ( FIRMWARE_REVISION ) + 1; // + 0x0d
             } else {
-                /* uc3: skládáme "mz800emu v<major>.<minor>" do scratch
-                 * bufferu. Zachováváme "mz800emu" branding analogicky
-                 * k uc1 (klient pozná že běží na emulátoru, ne na HW). */
-                snprintf ( (char*) g_unimgr.buf_byte, PARAM_BUFFER_SIZE,
-                           "mz800emu v%d.%d",
-                           UNICARD_FW_UC3_MAJOR, UNICARD_FW_UC3_MINOR );
+                /* uc3: skládáme text verze do scratch bufferu. v0.26
+                 * "mz800emu v0.26" (branding analogicky k uc1, klient pozná
+                 * že běží na emulátoru), v0.37 "MZ800 v0.37" jako firmware. */
+                unicard_get_uc3_version_text ( (char*) g_unimgr.buf_byte, PARAM_BUFFER_SIZE );
                 g_unimgr.buf = g_unimgr.buf_byte;
                 g_unimgr.buf_count = strlen ( (char*) g_unimgr.buf_byte ) + 1;
             };
@@ -1630,7 +1628,7 @@ static void unimgr_write_CMD ( uint8_t data ) {
                  * pc_type per mzarch (0=MZ800, 3=MZ1500, 4=MZ700, ...).
                  * Sjednoceno s app_version_t v uc3 firmware. */
                 g_unimgr.buf_byte[0] = UNICARD_FW_UC3_MAJOR;
-                g_unimgr.buf_byte[1] = UNICARD_FW_UC3_MINOR;
+                g_unimgr.buf_byte[1] = (uint8_t) unicard_get_uc3_minor ( );
                 g_unimgr.buf_byte[2] = UNICARD_FW_UC3_SUBTYPE;
                 g_unimgr.buf_byte[3] = unicard_get_uc3_pc_type ( );
                 g_unimgr.buf = g_unimgr.buf_byte;

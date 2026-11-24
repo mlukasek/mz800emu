@@ -427,7 +427,7 @@ extern "C" {
 #define cmdDNSRES       0x89    // uc3: DNS response
 
 
-/* UC API rev 2 (uc3 + volba api_rev2), kódy podle MZPico, specifikace
+/* UC API rev 2 (uc3 v0.37), kódy podle MZPico, specifikace
  * UC-UniMgr docs/api.md. */
 #define cmdGETCONFIG    0x92    // str sekce: proud záznamů 80 B (klíč 16 + hodnota 64)
 #define cmdINFO         0x95    // 16 B: [0] revize 2, [1] deska, [3] příznaky MZPico, [8-9] příznaky UC

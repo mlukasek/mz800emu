@@ -270,15 +270,25 @@ void imgui_menu_unicard(void)
             };
 
             bool is_uc3 = (current_fw == UNICARD_FW_UC3);
-            /* Sestavit dynamický label s aktuální uc3 verzí (drží stabilní
-             * ID přes ###suffix). */
-            char uc3_label[64];
-            snprintf(uc3_label, sizeof(uc3_label),
-                     _("Firmware: uc3 (v%d.%d)###unicard_fw_uc3"),
-                     UNICARD_FW_UC3_MAJOR, UNICARD_FW_UC3_MINOR);
-            if (ImGui::MenuItem(uc3_label, NULL, is_uc3))
+            unsigned uc3_minor = unicard_get_uc3_minor();
+            /* uc3 ve dvou verzích: v0.26 a v0.37 (firmware mk3b s UC API rev 2).
+             * Stejný přeložený label s verzí, stabilní ID přes ###suffix
+             * a PushID (= žádný nový řetězec k překladu). */
+            static const unsigned uc3_versions[] = { UNICARD_FW_UC3_MINOR, UNICARD_FW_UC3_REV2_MINOR };
+            for (unsigned i = 0; i < sizeof(uc3_versions) / sizeof(uc3_versions[0]); i++)
             {
-                if (!is_uc3) unicard_request_set_fw(UNICARD_FW_UC3);
+                unsigned minor = uc3_versions[i];
+                bool selected = is_uc3 && (uc3_minor == minor);
+                char uc3_label[64];
+                snprintf(uc3_label, sizeof(uc3_label),
+                         _("Firmware: uc3 (v%d.%d)###unicard_fw_uc3"),
+                         UNICARD_FW_UC3_MAJOR, (int)minor);
+                ImGui::PushID((int)minor);
+                if (ImGui::MenuItem(uc3_label, NULL, selected))
+                {
+                    if (!selected) unicard_request_set_uc3_version(minor);
+                };
+                ImGui::PopID();
             };
         }
 

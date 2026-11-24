@@ -71,7 +71,7 @@ static CFGELM *g_elm_readonly;
 static CFGELM *g_elm_fw_version;
 static CFGELM *g_elm_runtime_check_on_connect;
 static CFGELM *g_elm_managed_fdc;
-static CFGELM *g_elm_api_rev2;
+static CFGELM *g_elm_uc3_version;
 
 /**
  * @brief Kořen SD karty převedený vůči cfg_dir (vrací ho
@@ -173,14 +173,52 @@ en_UNICARD_FW unicard_get_fw ( void ) {
 }
 
 
+unsigned unicard_get_uc3_minor ( void ) {
+    if ( ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) && ( g_unicard.uc3_version == UNICARD_FW_UC3_REV2_MINOR ) ) {
+        return UNICARD_FW_UC3_REV2_MINOR;
+    };
+    return UNICARD_FW_UC3_MINOR;
+}
+
+
 int unicard_get_api_rev2 ( void ) {
-    return ( g_unicard.api_rev2 && ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) ) ? 1 : 0;
+    return ( unicard_get_uc3_minor ( ) == UNICARD_FW_UC3_REV2_MINOR ) ? 1 : 0;
 }
 
 
 void unicard_set_api_rev2 ( int on ) {
-    g_unicard.api_rev2 = on ? 1 : 0;
-    cfgelement_set_bool_value ( g_elm_api_rev2, g_unicard.api_rev2 );
+    g_unicard.uc3_version = on ? UNICARD_FW_UC3_REV2_MINOR : UNICARD_FW_UC3_MINOR;
+    cfgelement_set_keyword_value ( g_elm_uc3_version, g_unicard.uc3_version );
+}
+
+
+void unicard_get_uc3_version_text ( char *buf, size_t size ) {
+    unsigned minor = unicard_get_uc3_minor ( );
+    snprintf ( buf, size, "%s v%d.%d", ( minor == UNICARD_FW_UC3_REV2_MINOR ) ? "MZ800" : "mz800emu",
+               UNICARD_FW_UC3_MAJOR, minor );
+}
+
+
+void unicard_set_uc3_version ( unsigned minor ) {
+    /* v0.37 (firmware mk3b s UC API rev 2) existuje jen pro MZ-800 */
+    if ( ( minor != UNICARD_FW_UC3_REV2_MINOR ) || ( g_mzarch_platform_numeric != 800 ) ) {
+        minor = UNICARD_FW_UC3_MINOR;
+    };
+    if ( (int) minor == g_unicard.uc3_version ) return;
+
+    /* Odpojit a znovu připojit jako unicard_set_fw(): dispatch příkazů závisí na verzi. */
+    int was_connected = UNICARD_TEST_IS_CONNECTED;
+    if ( was_connected ) {
+        unicard_set_connected ( UNICARD_CONNECTION_DISCONNECTED );
+    }
+
+    g_unicard.uc3_version = (int) minor;
+    cfgelement_set_keyword_value ( g_elm_uc3_version, (int) minor );
+    printf ( "INFO: Unicard uc3 firmware version set to v%d.%d\n", UNICARD_FW_UC3_MAJOR, minor );
+
+    if ( was_connected ) {
+        unicard_set_connected ( UNICARD_CONNECTION_CONNECTED );
+    }
 }
 
 
@@ -383,8 +421,12 @@ void unicard_set_fw ( en_UNICARD_FW fw ) {
 
     g_unicard.fw_emulated = fw;
     cfgelement_set_bool_value ( g_elm_fw_version, (int) fw );
-    printf ( "INFO: Unicard simulated firmware version set to %s\n",
-             ( fw == UNICARD_FW_UC1 ) ? "uc1 (rev.60)" : "uc3 (v0.26)" );
+    if ( fw == UNICARD_FW_UC1 ) {
+        printf ( "INFO: Unicard simulated firmware version set to uc1 (rev.60)\n" );
+    } else {
+        printf ( "INFO: Unicard simulated firmware version set to uc3 (v%d.%d)\n",
+                 UNICARD_FW_UC3_MAJOR, unicard_get_uc3_minor ( ) );
+    };
 
     if ( was_connected ) {
         unicard_set_connected ( UNICARD_CONNECTION_CONNECTED );
@@ -1095,9 +1137,14 @@ void unicard_init ( void ) {
     g_elm_managed_fdc = cfgmodule_register_new_element ( cmod, "managed_fdc", CFGENTYPE_UNSIGNED, UNICARD_MANAGED_FDC_FDC0 );
     cfgelement_set_handlers ( g_elm_managed_fdc, (void*) &g_unicard.managed_fdc, (void*) &g_unicard.managed_fdc );
 
-    /* UC API rev 2 k uc3 (UC-UniMgr docs/api.md). Default 0 = fw 0.26. */
-    g_elm_api_rev2 = cfgmodule_register_new_element ( cmod, "api_rev2", CFGENTYPE_BOOL, 0 );
-    cfgelement_set_handlers ( g_elm_api_rev2, (void*) &g_unicard.api_rev2, (void*) &g_unicard.api_rev2 );
+    /* Verze firmware uc3: v0.26 (default) nebo v0.37 (firmware mk3b s UC API
+     * rev 2, UC-UniMgr docs/api.md; jen MZ-800). KEYWORD: v INI čitelné slovo,
+     * hodnota je minor verze (UNSIGNED by se z INI četl šestnáctkově). */
+    g_elm_uc3_version = cfgmodule_register_new_element ( cmod, "uc3_version", CFGENTYPE_KEYWORD, UNICARD_FW_UC3_MINOR,
+                                                        UNICARD_FW_UC3_MINOR, "v0.26",
+                                                        UNICARD_FW_UC3_REV2_MINOR, "v0.37",
+                                                        -1 );
+    cfgelement_set_handlers ( g_elm_uc3_version, (void*) &g_unicard.uc3_version, (void*) &g_unicard.uc3_version );
 
     cfgmodule_parse ( cmod );
     /* Propaguj hodnoty z INI do target proměnných (g_unicard.*).
@@ -1106,6 +1153,11 @@ void unicard_init ( void ) {
      * standardní cfgmodule_propagate (= projde všechny elementy s
      * propagate_value_handler). */
     cfgmodule_propagate ( cmod );
+    /* uc3 v0.37 jen na MZ-800; jiná hodnota z INI = v0.26. */
+    if ( ( g_unicard.uc3_version != UNICARD_FW_UC3_REV2_MINOR ) || ( g_mzarch_platform_numeric != 800 ) ) {
+        g_unicard.uc3_version = UNICARD_FW_UC3_MINOR;
+        cfgelement_set_keyword_value ( g_elm_uc3_version, g_unicard.uc3_version );
+    };
     /* Kořen SD vůči cfg_dir; prázdný sd_root z INI nahradí výchozím. */
     unicard_sd_root_update ( );
 
@@ -2711,7 +2763,7 @@ GPtrArray* unicard_config_get ( const char *section ) {
     unicard_config_add ( st, "LINK", "1" );
     unicard_config_add ( st, "DHCP", ( 0 == strcmp ( unicard_config_value ( recs, "DHCP", "0" ), "1" ) ) ? "1" : "0" );
     char version[32];
-    snprintf ( version, sizeof ( version ), "mz800emu v%d.%d", UNICARD_FW_UC3_MAJOR, UNICARD_FW_UC3_MINOR );
+    unicard_get_uc3_version_text ( version, sizeof ( version ) );
     unicard_config_add ( st, "VERSION", version );
     /* NTP (firmware 0.28): hodiny z NTP jen s TIMEZONE v network.cfg a nenastavenými hodinami (rok 2000).
      * Hodiny emulace jdou podle PC, jsou tedy nastavené: s TIMEZONE KEPT, bez něj OFF. */

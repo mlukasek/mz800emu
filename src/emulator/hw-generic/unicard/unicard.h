@@ -165,6 +165,11 @@ extern "C" {
     #define UNICARD_FW_UC3_MINOR    26      /* APP_VER_MINOR */
     #define UNICARD_FW_UC3_SUBTYPE  3       /* APP_VER_SUBTYPE */
 
+    /* uc3 v0.37: firmware mk3b s rozšířením UC API rev 2 (INFO 95h revize 2,
+     * opravy chyb fw 0.26, GETCONFIG/SETCONFIG, MOUNTS, COPY, RESTART, cloud:,
+     * RKEY; UC-UniMgr docs/api.md). Jen MZ-800 (firmware 0.27+ je jen pro MZ-800). */
+    #define UNICARD_FW_UC3_REV2_MINOR 37
+
 
     /**
      * Global state pro pending runtime-mismatch dialog.
@@ -216,10 +221,10 @@ extern "C" {
          * Default FDC0. Typ int kvůli cfgelement INT bind. */
         int managed_fdc;
 
-        /* uc3 s rozšířením UC API rev 2 (INFO 95h revize 2, opravy chyb
-         * fw 0.26, GETCONFIG/SETCONFIG, MOUNTS, COPY, RESTART). Bez uc3 se
-         * neuplatní. Specifikace: UC-UniMgr docs/api.md. Default 0. */
-        int api_rev2;
+        /* Verze firmware uc3: UNICARD_FW_UC3_MINOR (v0.26, default) nebo
+         * UNICARD_FW_UC3_REV2_MINOR (v0.37 s UC API rev 2, jen MZ-800).
+         * Bez uc3 se neuplatní. INI uc3_version (KEYWORD v0.26 / v0.37). */
+        int uc3_version;
 
         /* Hodiny karty = místní čas hostitele + rtc_offset (sekundy).
          * Nastavuje cmdRTCSETD/cmdRTCSETT (uc3), platí do konce běhu
@@ -484,13 +489,42 @@ extern "C" {
     extern void unicard_read_rtc ( st_UNICARD_RTC *rtc );
 
     /**
-     * @brief Emuluje se UC API rev 2? (uc3 a volba api_rev2)
+     * @brief Emuluje se UC API rev 2? (uc3 v0.37)
      * @return 1 ano, 0 ne
      */
     extern int unicard_get_api_rev2 ( void );
 
-    /** @brief Zapne (1) nebo vypne (0) UC API rev 2 (platí jen pro uc3). */
+    /**
+     * @brief Přepne verzi uc3 bez odpojení karty: 1 = v0.37 (UC API rev 2), 0 = v0.26.
+     *
+     * Pro testy; uživatelská změna jde přes unicard_set_uc3_version().
+     */
     extern void unicard_set_api_rev2 ( int on );
+
+    /**
+     * @brief Minor verze emulovaného firmware uc3 (REVD, REV, STATUS VERSION).
+     * @return UNICARD_FW_UC3_REV2_MINOR pro uc3 v0.37, jinak UNICARD_FW_UC3_MINOR
+     */
+    extern unsigned unicard_get_uc3_minor ( void );
+
+    /**
+     * @brief Nastaví verzi firmware uc3 (26 nebo 37, jiná hodnota = 26).
+     *
+     * Jako unicard_set_fw(): při aktivním Connect se karta odpojí a znovu
+     * připojí (dispatch příkazů závisí na verzi). v0.37 jen na MZ-800.
+     */
+    extern void unicard_set_uc3_version ( unsigned minor );
+
+    /**
+     * @brief Text verze firmware uc3 pro REV a STATUS VERSION.
+     *
+     * v0.26: "mz800emu v0.26" (klient pozná emulátor, jako uc1). v0.37: jako
+     * firmware mk3b 0.37 pro MZ-800 ("%s v%d.%d", app_version.text = "MZ800").
+     *
+     * @param[out] buf Cíl (C řetězec).
+     * @param size Velikost buf.
+     */
+    extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
     /**
      * @brief Nastaví datum hodin karty (čas běží dál).

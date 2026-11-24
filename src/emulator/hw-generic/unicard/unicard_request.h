@@ -60,6 +60,13 @@ uint32_t unicard_request_connect_bypass_check(void);
 uint32_t unicard_request_set_fw(int fw);
 
 /**
+ * @brief Zařadí firmware uc3 v dané verzi (unicard_set_fw(UC3) a unicard_set_uc3_version()).
+ * @param minor UNICARD_FW_UC3_MINOR (v0.26) nebo UNICARD_FW_UC3_REV2_MINOR (v0.37); jiná hodnota = nezařadí se.
+ * @return Pořadové číslo zásahu (od 1); 0 = nezařazeno.
+ */
+uint32_t unicard_request_set_uc3_version(unsigned minor);
+
+/**
  * @brief Zařadí změnu režimu jen pro čtení SD (unicard_set_readonly()).
  * @param readonly 0 = zápis povolen, jinak jen čtení.
  * @return Pořadové číslo zásahu (od 1); 0 = nezařazeno (neplatný argument).

@@ -65,6 +65,25 @@ uint32_t unicard_request_set_fw(int fw)
 }
 
 
+/** @brief Zásah: firmware uc3 ve verzi i[0] (26 nebo 37). */
+static int unicard_request_exec_set_uc3_version(const st_DEVICE_REQ_ARGS *a)
+{
+    unicard_set_fw(UNICARD_FW_UC3);
+    unicard_set_uc3_version((unsigned)a->i[0]);
+    return 0;
+}
+
+
+uint32_t unicard_request_set_uc3_version(unsigned minor)
+{
+    if (minor != UNICARD_FW_UC3_MINOR && minor != UNICARD_FW_UC3_REV2_MINOR) return 0;
+    st_DEVICE_REQ_ARGS a;
+    device_request_args_set_str(&a, NULL);
+    a.i[0] = (int)minor;
+    return device_request_submit("unicard_set_uc3_version", unicard_request_exec_set_uc3_version, &a);
+}
+
+
 /** @brief Zásah: jen čtení SD (i[0] 0/1). */
 static int unicard_request_exec_set_readonly(const st_DEVICE_REQ_ARGS *a)
 {

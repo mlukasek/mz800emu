@@ -2827,10 +2827,10 @@ void test_unicard_rtc_invalid_ignored(void)
 
 
 /* ================================================================
- * UC API rev 2 (uc3 + api_rev2): INFO 95h
+ * UC API rev 2 (uc3 v0.37): INFO 95h
  * ================================================================ */
 
-/* fw 0.26 (bez api_rev2) INFO nezná: ERROR. */
+/* fw 0.26 INFO nezná: ERROR. */
 void test_unicard_info_absent_in_fw026(void)
 {
     MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
@@ -2868,7 +2868,7 @@ void test_unicard_info_rev2(void)
 }
 
 
-/* api_rev2 bez uc3 nic nedělá (uc1). Jen MZ-800. */
+/* v0.37 bez uc3 nic nedělá (uc1). Jen MZ-800. */
 void test_unicard_info_rev2_needs_uc3(void)
 {
     MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
@@ -2884,6 +2884,66 @@ void test_unicard_info_rev2_needs_uc3(void)
     unicard_set_api_rev2(0);
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, rev2, "uc1: rev 2 neplatí");
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, sts & UNICARD_STS_ERROR, "uc1: INFO = ERROR");
+}
+
+
+/* Text z cmdREV bez 0x0d (nejvýš size-1 znaků). */
+static void uc_recv_rev(char *buf, size_t size)
+{
+    size_t n = 0;
+    uc_send_cmd(cmdREV);
+    while (n < size - 1) {
+        uint8_t b = uc_recv_data();
+        if (b == 0x0d) break;
+        buf[n++] = (char)b;
+    }
+    buf[n] = ' ';
+}
+
+
+/* Verze uc3: v0.26 (default) hlásí REV "mz800emu v0.26" a REVD 0.26,
+ * v0.37 (jen MZ-800) jako firmware mk3b 0.37 "MZ800 v0.37" a REVD 0.37
+ * s UC API rev 2; jiná verze = v0.26. */
+void test_unicard_uc3_version(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    char rev[64];
+    uint8_t revd[4];
+
+    unicard_set_uc3_version(UNICARD_FW_UC3_REV2_MINOR);
+    unsigned minor = unicard_get_uc3_minor();
+    int rev2 = unicard_get_api_rev2();
+    uc_send_cmd(cmdRESET);
+    uc_recv_rev(rev, sizeof(rev));
+    uc_send_cmd(cmdREVD);
+    for (int i = 0; i < 4; i++) revd[i] = uc_recv_data();
+    unicard_set_uc3_version(UNICARD_FW_UC3_MINOR);
+
+    if (g_mzarch_platform_numeric == 800) {
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(37, minor, "MZ-800: uc3 v0.37");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, rev2, "v0.37 = UC API rev 2");
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("MZ800 v0.37", rev, "REV jako firmware 0.37");
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, revd[0], "REVD major");
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(37, revd[1], "REVD minor 37");
+    } else {
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(26, minor, "v0.37 jen na MZ-800");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, rev2, "mimo MZ-800 bez rev 2");
+    };
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_FW_UC3_SUBTYPE, revd[2], "REVD subtype");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(unicard_get_uc3_pc_type(), revd[3], "REVD typ počítače");
+
+    /* zpět v0.26 */
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(26, unicard_get_uc3_minor(), "zpět v0.26");
+    uc_recv_rev(rev, sizeof(rev));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("mz800emu v0.26", rev, "REV v0.26");
+    uc_send_cmd(cmdREVD);
+    for (int i = 0; i < 4; i++) revd[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(26, revd[1], "REVD minor 26");
+
+    /* jiná verze = v0.26 */
+    unicard_set_uc3_version(30);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(26, unicard_get_uc3_minor(), "neznámá verze = v0.26");
 }
 
 
@@ -3598,7 +3658,7 @@ void test_unicard_getconfig_status_rev2(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NETMASK=255.255.255.0|"), "výchozí maska firmwaru");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "LINK=1|"), "LINK");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "DHCP=1|"), "DHCP");
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=mz800emu v"), "VERSION");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=MZ800 v0.37|"), "VERSION jako REV");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=OFF|"), "bez TIMEZONE NTP=OFF");
     write_unicard_cfg("network.cfg", "TIMEZONE=CET-1CEST,M3.5.0,M10.5.0/3\n");
     uc_getconfig("STATUS", out, sizeof(out));
@@ -3868,6 +3928,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_info_absent_in_fw026);
     RUN_TEST(test_unicard_info_rev2);
     RUN_TEST(test_unicard_info_rev2_needs_uc3);
+    RUN_TEST(test_unicard_uc3_version);
 
     /* UC API rev 2: chybové kódy. */
     RUN_TEST(test_unicard_err_codes_rev2);
