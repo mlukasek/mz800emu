@@ -1,3 +1,5 @@
+	- Unicard uc3 v0.37 (UC API rev 2) - MOUNTS: stavový bajt 2 během výstupu ukazuje zbytek aktuálního řádku jako firmware 0.37, který výstup vydává po řádcích (dřív zbytek celého výstupu, nejvýš 255). Cesta v řádku má jako ve firmwaru nejvýš 252 bajtů.
+
 	- Unicard uc3 v0.37 (UC API rev 2) - GETCONFIG a SETCONFIG jako firmware 0.37 jen se souborem konfigurace do 4 KB (vyrovnávací paměť souboru karty): větší soubor hlásí chybu 6 s FR_DENIED, SETCONFIG také, když by výsledek 4 KB přesáhl (soubor se pak nezmění).
 
 	- BUGFIX: Unicard uc3 v0.37 (UC API rev 2) - COPY souboru na sebe hlásí FR_DENIED jako firmware 0.37 (stejná cesta bez ohledu na velikost písmen), a emulace navíc porovná i cesty na hostiteli: cíl zadaný jinými písmeny, relativně nebo aliasem 8.3 by na Windows zdroj zkrátil na nulu.

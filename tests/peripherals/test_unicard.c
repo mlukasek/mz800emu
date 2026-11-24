@@ -2761,6 +2761,13 @@ void test_unicard_mount_missing_image(void)
     uc_mount(0, "/nothing.dsk");
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR,
                                     "MOUNT neexistujícího obrazu = ERROR");
+    /* rev 2 (firmware 0.37) stejně: kód 0 a FRESULT 0 (reload_FDD ff_res nenastaví) */
+    unicard_set_api_rev2(1);
+    uc_mount(0, "/nothing.dsk");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "rev 2: ERROR");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, uc_read_status_byte(2), "rev 2: kód 0 jako firmware 0.37");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, uc_read_status_byte(3), "rev 2: FRESULT 0");
+    unicard_set_api_rev2(0);
     char *cfg = read_unicard_cfg("fd0.cfg");
     TEST_ASSERT_NOT_NULL_MESSAGE(cfg, "fd0.cfg se přesto zapíše");
     TEST_ASSERT_EQUAL_STRING("/nothing.dsk", cfg);
@@ -3293,6 +3300,26 @@ void test_unicard_mounts_rev2(void)
     uc_read_mounts(out, sizeof(out));
     TEST_ASSERT_EQUAL_STRING_MESSAGE("1:\r2:/disk.dsk\r3:\r4:\rR:\rQ:/qd.mzq\rE:/emm.dat\rS:\r", out,
                                      "cesty z konfigurace jednotek");
+}
+
+
+/* Stav bajt 2 během MOUNTS = zbytek aktuálního řádku (firmware 0.37 ho vydává po řádcích). */
+void test_unicard_mounts_status_line_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    unicard_set_api_rev2(1);
+    create_test_file("disk.dsk", 16);
+    uc_mount(1, "/disk.dsk");
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdMOUNTS);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, uc_read_status_byte(2), "1:\\r = 3 B");
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, uc_read_status_byte(2), "zbytek řádku");
+    uc_recv_data();
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(12, uc_read_status_byte(2), "2:/disk.dsk\\r = 12 B");
 }
 
 
@@ -4220,6 +4247,7 @@ int main(int argc, char *argv[])
     /* UC API rev 2: MOUNTS 98h. */
     RUN_TEST(test_unicard_mounts_rev2);
     RUN_TEST(test_unicard_mounts_long_output);
+    RUN_TEST(test_unicard_mounts_status_line_rev2);
     RUN_TEST(test_unicard_mounts_absent_in_fw026);
 
     /* UC API rev 2: COPY 9Ah. */

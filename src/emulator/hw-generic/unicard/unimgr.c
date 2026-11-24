@@ -1024,8 +1024,10 @@ static int unimgr_copy_busy ( int is_cmd, uint8_t data ) {
     return 1;
 }
 
-/* Výstup MOUNTS: 8 řádků "j:" + cesta (nejvýš 255 B) + 0Dh. */
-static uint8_t s_mounts_out[8 * ( 2 + 255 + 1 )];
+/* Výstup MOUNTS: 8 řádků "j:" + cesta + 0Dh. Cesta nejvýš PARAM_BUFFER_SIZE - 3 B
+ * jako f_read firmwaru do buf_byte (řádek se tak vejde do 255 B). */
+#define UNIMGR_MOUNTS_PATH_MAX ( PARAM_BUFFER_SIZE - 3 )
+static uint8_t s_mounts_out[8 * ( 2 + UNIMGR_MOUNTS_PATH_MAX + 1 )];
 
 /**
  * cmdMOUNTS (UC API rev 2) - připojené obrazy všech jednotek.
@@ -1033,13 +1035,14 @@ static uint8_t s_mounts_out[8 * ( 2 + 255 + 1 )];
  * Řádek "jednotka:cesta" 0Dh pro jednotky 0-7 v pořadí 1 2 3 4 R Q E S
  * (FDD 0-3 a QD jako MZPico, mk3b navíc RAM disk, EMM, SASI). Cesta je obsah
  * konfigurace jednotky (z ní ji karta načetla), prázdná = jednotka prázdná.
- * Výstup může být delší než 255 B.
+ * Výstup může být delší než 255 B. Stav bajt 2 = zbytek aktuálního řádku
+ * (firmware 0.37 vydává MOUNTS po řádcích).
  */
 static void do_cmdMOUNTS ( void ) {
     static const char unit[8] = { '1', '2', '3', '4', 'R', 'Q', 'E', 'S' };
     size_t n = 0;
     for ( uint8_t d = 0; d < 8; d++ ) {
-        char path[256];
+        char path[UNIMGR_MOUNTS_PATH_MAX + 1];
         if ( unicard_mount_cfg_get ( d, path, sizeof ( path ) ) < 0 ) path[0] = 0x00;
         n += (size_t) snprintf ( (char*) &s_mounts_out[n], sizeof ( s_mounts_out ) - n, "%c:%s\r", unit[d], path );
     };
@@ -2322,6 +2325,11 @@ static uint8_t unimgr_read_STATUS ( void ) {
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
                 // tady je obcas zbyvajici pocet bajtu z prikazu k vyzvednuti (MOUNTS může mít přes 255 B)
                 ret = ( g_unimgr.buf_count > 0xff ) ? 0xff : (uint8_t) g_unimgr.buf_count;
+                if ( ( cmdMOUNTS == g_unimgr.cmd ) && ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) ) {
+                    uint16_t k = 0; // MOUNTS po řádcích: zbytek řádku i s 0Dh
+                    while ( ( k < g_unimgr.buf_count ) && ( g_unimgr.buf[k] != 0x0d ) ) k++;
+                    ret = (uint8_t) ( ( k < g_unimgr.buf_count ) ? k + 1 : k );
+                };
             } else if ( unimgr_cfg_active ( ) ) {
                 ret = g_unimgr.cfg_count; // zbytek záznamu GETCONFIG
             } else if ( ( EXIT_SUCCESS == unicard_dir_is_open ( &g_unimgr.dir ) ) || ( EXIT_SUCCESS == unicard_file_is_open ( &g_unimgr.file ) ) || s_cloud.dir ) {
