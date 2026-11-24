@@ -1762,7 +1762,7 @@ FRESULT unicard_dir_read_filelist ( st_UNICARD_DIR *dir, char *buff, int buff_si
     } else {
         GStatBuf statbuf;
         g_stat ( filepath, &statbuf );
-        snprintf ( buff, buff_size, "%s%c%d%c", cname, 0x0d, (uint32_t) statbuf.st_size, 0x0d );
+        snprintf ( buff, buff_size, "%s%c%u%c", cname, 0x0d, (unsigned) (uint32_t) statbuf.st_size, 0x0d ); // jako long2dec firmwaru
     };
 
     g_free ( filepath );

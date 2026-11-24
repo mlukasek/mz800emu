@@ -1,3 +1,5 @@
+	- BUGFIX: Unicard - FILELIST writes the file size unsigned as the card does; a file of 2 GiB or more had a negative size.
+
 	- BUGFIX: Unicard uc3 - reading the drive configuration /unicard/fd0.cfg-fd3.cfg no longer rewrites it. The mount command writes the configuration as the card does; it is rewritten only when the managed FDC drive holds another image (put in from the emulator's GUI): an image on the SD card as the card's path (/IMG/disk.dsk, no line end, before with backslashes on Windows), an image outside the SD card as before. Without a managed FDC, with an empty drive (the card after mounting a missing image), with the same image or with a read-only SD card the configuration is not changed (before an empty drive made it an empty file). uc1 is unchanged.
 
 	- BUGFIX: Unicard - the status bit EOF (bit 5) is on as on the card as soon as the file position reaches its size (an empty file right after opening). Before only after a read past the end of the file (feof), one read late.
