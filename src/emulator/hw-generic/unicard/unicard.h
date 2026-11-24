@@ -527,6 +527,16 @@ extern "C" {
     extern void unicard_get_uc3_version_text ( char *buf, size_t size );
 
     /**
+     * @brief Hodiny karty z NTP zapnuté? (platný TIMEZONE v /unicard/network.cfg)
+     *
+     * INFO 95h bajt 3 příznak 10h (jako MZPico). Řetězec POSIX TZ se kontroluje
+     * jako ve firmware mk3b 0.37.
+     *
+     * @return 1 ano, 0 ne (bez TIMEZONE nebo chybný řetězec)
+     */
+    extern int unicard_ntp_enabled ( void );
+
+    /**
      * @brief Nastaví datum hodin karty (čas běží dál).
      *
      * Rozsah jako RTC STM32 karty: roky 2000-2099.

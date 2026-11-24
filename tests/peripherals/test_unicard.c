@@ -2860,10 +2860,11 @@ void test_unicard_info_rev2(void)
     unicard_set_api_rev2(0);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, info[0], "revize rozšíření 2");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_INFO_BOARD_MK3B, info[1], "deska mk3b");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[3], "bez Wi-Fi a NET");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[3], "bez Wi-Fi, NET, cloudu a NTP");
     uint16_t flags = info[8] | (info[9] << 8);
-    TEST_ASSERT_EQUAL_HEX16_MESSAGE(UC_INFO_SEEK | UC_INFO_LFN, flags & (UC_INFO_SEEK | UC_INFO_LFN),
-                                     "příznaky SEEK a LFN");
+    TEST_ASSERT_EQUAL_HEX16_MESSAGE(0x01FF, flags, "příznaky UC jako firmware 0.37 (i cloud bez sítě)");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[10], "vydaný firmware: bez přípony [10]");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, info[11], "vydaný firmware: bez přípony [11]");
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_DOUTRQ, "po 16 B konec výstupu");
 }
 
@@ -3546,7 +3547,8 @@ void test_unicard_cloud_listvol_rev2(void)
     g_unsetenv("MZ800EMU_UNICARD_CLOUD");
     uc_send_cmd(cmdINFO);
     for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
-    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[8] & 0x80, "bez MZ800EMU_UNICARD_CLOUD karta cloud nemá");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, info[8] & 0x80, "bez MZ800EMU_UNICARD_CLOUD svazek cloud: zůstává (fw 0.37)");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[3] & 0x01, "bez MZ800EMU_UNICARD_CLOUD cloud nedostupný");
     uc_send_cmd(cmdLISTVOL);
     n = 0;
     while ((n < sizeof(out) - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) out[n++] = (char)uc_recv_data();
@@ -3660,9 +3662,54 @@ void test_unicard_getconfig_status_rev2(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "DHCP=1|"), "DHCP");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=MZ800 v0.37|"), "VERSION jako REV");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=OFF|"), "bez TIMEZONE NTP=OFF");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "CLOUD=OFF|"), "bez cloudu CLOUD=OFF (firmware 0.37 vždy)");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "OPENCPU=0|"), "OPENCPU=0 (emulátor nespustí ARM)");
     write_unicard_cfg("network.cfg", "TIMEZONE=CET-1CEST,M3.5.0,M10.5.0/3\n");
     uc_getconfig("STATUS", out, sizeof(out));
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=KEPT|"), "s TIMEZONE: hodiny emulace nastavené (KEPT)");
+    write_unicard_cfg("network.cfg", "TIMEZONE=CET-1CEST,M13.5.0,M10.5.0/3\n");
+    uc_getconfig("STATUS", out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=BAD TIMEZONE|"), "chybný TIMEZONE (měsíc 13)");
+}
+
+
+/* Hodiny z NTP (INFO [3] 10h) jen s TIMEZONE, který přijme firmware 0.37 (řetězec POSIX TZ). */
+void test_unicard_info_ntp_timezone(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    static const struct { const char *tz; int ok; } cases[] = {
+        { "CET-1CEST,M3.5.0,M10.5.0/3", 1 },
+        { "  CET-1CEST,M3.5.0,M10.5.0/3  ", 1 },     /* mezery firmware ořízne */
+        { "UTC0", 1 },
+        { "<+03>-3", 1 },
+        { "EST5EDT", 1 },                           /* letní čas s výchozími pravidly */
+        { "NZST-12NZDT-13,M9.5.0,M4.1.0/3", 1 },
+        { "AAA-1BBB,J60/1:30,300", 1 },
+        { "CET", 0 },                               /* bez posunu */
+        { "XY-1", 0 },                              /* jméno kratší než 3 */
+        { "CET-168", 0 },                           /* hodiny nad 167 */
+        { "CET-1:60", 0 },
+        { "CET-1CEST,M3.5.0", 0 },                  /* chybí konec */
+        { "CET-1CEST,M3.6.0,M10.5.0", 0 },          /* týden 6 */
+        { "CET-1CEST,J0,M10.5.0", 0 },              /* Jn od 1 */
+        { "CET-1x", 0 },                            /* jméno letního času kratší než 3 */
+    };
+    uint8_t info[16];
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char cfg[128];
+        snprintf(cfg, sizeof(cfg), "TIMEZONE=%s\n", cases[c].tz);
+        write_unicard_cfg("network.cfg", cfg);
+        uc_send_cmd(cmdINFO);
+        for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+        TEST_ASSERT_EQUAL_HEX8_MESSAGE(cases[c].ok ? 0x10 : 0x00, info[3] & 0x10, cases[c].tz);
+    }
+    write_unicard_cfg("network.cfg", "IPADDR=10.0.0.5\n");
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[3] & 0x10, "bez TIMEZONE bez NTP");
 }
 
 
@@ -3958,6 +4005,7 @@ int main(int argc, char *argv[])
     /* UC API rev 2: GETCONFIG, SETCONFIG. */
     RUN_TEST(test_unicard_getconfig_rev2);
     RUN_TEST(test_unicard_getconfig_status_rev2);
+    RUN_TEST(test_unicard_info_ntp_timezone);
     RUN_TEST(test_unicard_setconfig_rev2);
     RUN_TEST(test_unicard_setconfig_errors);
 

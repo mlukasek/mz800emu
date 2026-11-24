@@ -2732,6 +2732,104 @@ static void unicard_config_add ( GPtrArray *recs, const char *key, const char *v
 }
 
 
+/* Řetězec POSIX TZ tak, jak ho přijme firmware mk3b 0.37 (TIMEZONE v network.cfg):
+ * jméno (aspoň 3 písmena, nebo <...>), posun [+-]h[:m[:s]] (h do 167, m a s do 59),
+ * volitelně jméno letního času, jeho posun a pravidla ,začátek,konec
+ * (Mm.w.d s m 1-12, w 1-5, d 0-6; Jn 1-365; n 0-365; každé s volitelným /čas). */
+static const char* unicard_tz_name ( const char *p ) {
+    if ( '<' == *p ) {
+        p = strchr ( p, '>' );
+        return p ? p + 1 : NULL;
+    };
+    const char *start = p;
+    while ( g_ascii_isalpha ( *p ) ) p++;
+    return ( ( p - start ) >= 3 ) ? p : NULL;
+}
+
+
+/* Číslo; jako firmware přestane sčítat od 100000 (další číslice pak řetězec shodí). */
+static const char* unicard_tz_num ( const char *p, long *v ) {
+    if ( !g_ascii_isdigit ( *p ) ) return NULL;
+    *v = 0;
+    while ( g_ascii_isdigit ( *p ) && ( *v < 100000 ) ) *v = *v * 10 + ( *p++ - '0' );
+    return p;
+}
+
+
+static const char* unicard_tz_time ( const char *p ) {
+    long h, m, s;
+    if ( ( '+' == *p ) || ( '-' == *p ) ) p++;
+    p = unicard_tz_num ( p, &h );
+    if ( !p || ( h > 167 ) ) return NULL;
+    if ( ':' != *p ) return p;
+    p = unicard_tz_num ( p + 1, &m );
+    if ( !p || ( m > 59 ) ) return NULL;
+    if ( ':' != *p ) return p;
+    p = unicard_tz_num ( p + 1, &s );
+    return ( !p || ( s > 59 ) ) ? NULL : p;
+}
+
+
+static const char* unicard_tz_rule ( const char *p ) {
+    long a, b, c;
+    if ( 'M' == *p ) {
+        p = unicard_tz_num ( p + 1, &a );
+        if ( !p || ( '.' != *p ) ) return NULL;
+        p = unicard_tz_num ( p + 1, &b );
+        if ( !p || ( '.' != *p ) ) return NULL;
+        p = unicard_tz_num ( p + 1, &c );
+        if ( !p || ( a < 1 ) || ( a > 12 ) || ( b < 1 ) || ( b > 5 ) || ( c > 6 ) ) return NULL;
+    } else if ( 'J' == *p ) {
+        p = unicard_tz_num ( p + 1, &a );
+        if ( !p || ( a < 1 ) || ( a > 365 ) ) return NULL;
+    } else {
+        p = unicard_tz_num ( p, &a );
+        if ( !p || ( a > 365 ) ) return NULL;
+    };
+    if ( '/' == *p ) p = unicard_tz_time ( p + 1 );
+    return p;
+}
+
+
+static int unicard_tz_valid ( const char *tz ) {
+    const char *p = unicard_tz_name ( tz );
+    if ( p ) p = unicard_tz_time ( p );
+    if ( !p ) return 0;
+    if ( 0x00 == *p ) return 1; // bez letního času
+    p = unicard_tz_name ( p );
+    if ( !p ) return 0;
+    if ( *p && ( ',' != *p ) ) {
+        p = unicard_tz_time ( p );
+        if ( !p ) return 0;
+    };
+    if ( 0x00 == *p ) return 1; // letní čas s výchozími pravidly
+    if ( ',' != *p++ ) return 0;
+    p = unicard_tz_rule ( p );
+    if ( !p || ( ',' != *p++ ) ) return 0;
+    p = unicard_tz_rule ( p );
+    return ( p && ( 0x00 == *p ) ) ? 1 : 0;
+}
+
+
+/* Hodiny z NTP podle TIMEZONE v záznamech NETWORK: 0 bez TIMEZONE, 1 platný, 2 chybný řetězec.
+ * Firmware hodnotu ořízne o mezery na začátku a na konci. */
+static int unicard_ntp_cfg ( GPtrArray *recs ) {
+    char *tz = g_strdup ( unicard_config_value ( recs, "TIMEZONE", "" ) );
+    g_strstrip ( tz );
+    int cfg = ( 0x00 == tz[0] ) ? 0 : ( unicard_tz_valid ( tz ) ? 1 : 2 );
+    g_free ( tz );
+    return cfg;
+}
+
+
+int unicard_ntp_enabled ( void ) {
+    GPtrArray *recs = unicard_config_get ( "NETWORK" );
+    int cfg = unicard_ntp_cfg ( recs );
+    g_ptr_array_free ( recs, TRUE );
+    return ( 1 == cfg );
+}
+
+
 GPtrArray* unicard_config_get ( const char *section ) {
     GPtrArray *recs = g_ptr_array_new_with_free_func ( g_free );
     int status = ( 0 == strcmp ( section, "STATUS" ) );
@@ -2766,15 +2864,22 @@ GPtrArray* unicard_config_get ( const char *section ) {
     unicard_get_uc3_version_text ( version, sizeof ( version ) );
     unicard_config_add ( st, "VERSION", version );
     /* NTP (firmware 0.28): hodiny z NTP jen s TIMEZONE v network.cfg a nenastavenými hodinami (rok 2000).
-     * Hodiny emulace jdou podle PC, jsou tedy nastavené: s TIMEZONE KEPT, bez něj OFF. */
-    unicard_config_add ( st, "NTP", ( unicard_config_value ( recs, "TIMEZONE", "" )[0] != 0x00 ) ? "KEPT" : "OFF" );
+     * Hodiny emulace jdou podle PC, jsou tedy nastavené: s platným TIMEZONE KEPT, s chybným BAD TIMEZONE
+     * (firmware 0.37), bez něj OFF. */
+    static const char *const ntp_txt[] = { "OFF", "KEPT", "BAD TIMEZONE" };
+    unicard_config_add ( st, "NTP", ntp_txt[unicard_ntp_cfg ( recs )] );
     /* CLOUD (firmware 0.32): the card checks its cloud server every minute: OFF (no network or no CLOUDHOST),
      * WAIT (not checked yet), OK (it answered), FAIL. The emulation: with MZ800EMU_UNICARD_CLOUD set (a card with
      * the cloud), OK when its folder exists, else OFF; MZ800EMU_UNICARD_CLOUD_STATE sets it (tests: WAIT, FAIL). */
     if ( unicard_cloud_root ( ) ) {
         const char *cs = g_getenv ( "MZ800EMU_UNICARD_CLOUD_STATE" );
         unicard_config_add ( st, "CLOUD", ( cs && cs[0] ) ? cs : ( unicard_cloud_online ( ) ? "OK" : "OFF" ) );
-    }
+    } else {
+        unicard_config_add ( st, "CLOUD", "OFF" ); // firmware 0.37 klíč hlásí vždy
+    };
+    /* OPENCPU (firmware 0.37 pro MZ-800): 1 = karta s F429 umí spustit kód ARM z MZ. Emulátor ARM nespustí
+     * (jako karta s F407). */
+    unicard_config_add ( st, "OPENCPU", "0" );
     g_ptr_array_free ( recs, TRUE );
     return st;
 }

@@ -860,14 +860,10 @@ static struct {
 } s_cloud;
 
 
-/* Karta s cloudem (UC_INFO_CLOUD): MZ800EMU_UNICARD_CLOUD nastavená. Dostupný (síť): složka existuje. */
-static int unimgr_cloud_on ( void ) {
-    return unicard_get_api_rev2 ( ) && ( NULL != unicard_cloud_root ( ) );
-}
-
-
+/* Svazek cloud: má firmware 0.37 vždy (UC_INFO_CLOUD). Dostupný (síť a server) je jen s nastavenou
+ * MZ800EMU_UNICARD_CLOUD a existující složkou, jinak chyba 7 s kódem 1 jako karta bez sítě. */
 static int unimgr_cloud_online ( void ) {
-    return unimgr_cloud_on ( ) && unicard_cloud_online ( );
+    return unicard_get_api_rev2 ( ) && unicard_cloud_online ( );
 }
 
 static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t op );
@@ -970,11 +966,11 @@ static void do_cmdCOPY ( en_UNIMGR_CMDSTATE cmd_phase ) {
         g_unimgr.err_code = UC_ERR_BUSY;
         return;
     };
-    if ( unimgr_cloud_on ( ) && unicard_cloud_is_path ( dst ) ) { // cloud je jen ke čtení
+    if ( unicard_cloud_is_path ( dst ) ) { // cloud je jen ke čtení
         g_unimgr.ff_res = FR_WRITE_PROTECTED;
         return;
     };
-    if ( unimgr_cloud_on ( ) && unicard_cloud_is_path ( src ) ) { // stažení rovnou do cíle, na pozadí
+    if ( unicard_cloud_is_path ( src ) ) { // stažení rovnou do cíle, na pozadí
         unimgr_cloud_start_get ( src, dst, UNIMGR_CLOUD_COPY );
         return;
     };
@@ -1047,15 +1043,17 @@ static void do_cmdMOUNTS ( void ) {
  * cmdINFO (UC API rev 2) - informace o kartě a rozšířeních.
  *
  * Výstup 16 B: [0] revize rozšíření 2, [1] deska (mk3b), [3] příznaky MZPico
- * (emulace nemá Wi-Fi ani NET), [8-9] příznaky UC.
+ * (01h cloud dostupný, 10h hodiny z NTP; NET 08h ne, emulace nemá relay NET),
+ * [8-9] příznaky UC (firmware 0.37 všechny), [10-11] přípona zkušebního
+ * překladu (vydaný firmware 0, 0).
  */
 static void do_cmdINFO ( void ) {
     memset ( g_unimgr.buf_byte, 0x00, 16 );
     g_unimgr.buf_byte[0] = 2;
     g_unimgr.buf_byte[1] = UC_INFO_BOARD_MK3B;
     if ( unimgr_cloud_online ( ) ) g_unimgr.buf_byte[3] |= 0x01; // cloud dostupný (MZPico: Wi-Fi a cloud)
+    if ( unicard_ntp_enabled ( ) ) g_unimgr.buf_byte[3] |= 0x10; // hodiny z NTP (jako MZPico)
     g_unimgr.buf_byte[8] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS & 0xff );
-    if ( !unimgr_cloud_on ( ) ) g_unimgr.buf_byte[8] &= (uint8_t) ~UC_INFO_CLOUD; // karta bez cloudu
     g_unimgr.buf_byte[9] = (uint8_t) ( UNIMGR_UC_INFO_FLAGS >> 8 );
     g_unimgr.buf = g_unimgr.buf_byte;
     g_unimgr.buf_count = 16;
