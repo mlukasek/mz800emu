@@ -1273,11 +1273,14 @@ void unicard_write_byte ( uint16_t port, uint8_t data ) {
         case 0x50:
         case 0x51:
         {
+            /* OpenCPU: the main loop runs the ARM code, what it serves waits for its end; the busy time from
+             * before this write: the last byte of CDh starts the code after the main loop took it (and released
+             * the WAIT), the Z80 goes on meanwhile (it reads CDh from 51h, takes its interrupts) */
+            uint32_t busy = unicard_opencpu_busy_cpu ( );
             int fast = unimgr_write_fast ( port & 0x01, data );
             unimgr_write_byte ( port & 0x01, data, (uint8_t) ( port >> 8 ) );
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
-                /* OpenCPU: the main loop runs the ARM code, what it serves waits for its end */
-                unicard_cpu_wait ( fast ? UNICARD_UC3_WAIT.write_fast : UNICARD_UC3_WAIT.write + unicard_opencpu_busy_cpu ( ) );
+                unicard_cpu_wait ( fast ? UNICARD_UC3_WAIT.write_fast : UNICARD_UC3_WAIT.write + busy );
             };
             break;
         }

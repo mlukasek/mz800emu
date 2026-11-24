@@ -4732,10 +4732,20 @@ void test_unicard_opencpu_rev2(void)
     };
     net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
     for (size_t i = 0; i < sizeof(loop); i++) net_cmd(cmdCPUWRITE, &loop[i], 1);
-    net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02\x20", 4);
+    net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02", 3);
+    uc_waited();
+    uc_send_data(0x20);                                        /* poslední bajt adresy: kód se rozběhne */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_037_WAIT_WRITE, uc_waited(),
+                                     "poslední bajt CDh: Z80 na kód nečeká (hlavní smyčka bajt vzala a pustila WAIT)");
     uint64_t busy = unicard_opencpu_busy_ticks();
     uint32_t expect = (uint32_t) ( ( 40000.0 / 56e6 + 100e-6 ) * GDGCLK_BASE );
     TEST_ASSERT_UINT32_WITHIN_MESSAGE(expect / 50, expect, (uint32_t) busy, "doba běhu podle CPUTIME (+-2 %)");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xCD, uc_recv_data(), "během běhu 51h čte CDh");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(UNICARD_UC3_037_WAIT_FILE_READ, uc_waited(), "CDh z 51h: rychlá cesta");
+    uint32_t busy_cpu = unicard_opencpu_busy_cpu();
+    uc_master_status();                                        /* čtení stavu obslouží až hlavní smyčka */
+    TEST_ASSERT_UINT32_WITHIN_MESSAGE(busy_cpu / 50 + 1, UNICARD_UC3_037_WAIT_STATUS_READ + busy_cpu, uc_waited(),
+                                      "stav během běhu: Z80 čeká na konec kódu");
     unicard_opencpu_finish();
     TEST_ASSERT_EQUAL_HEX32(0, unicard_opencpu_abi_errors());
 
