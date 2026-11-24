@@ -1,3 +1,5 @@
+	- Unicard - DNSRES hlásí jako firmware (lwIP) stav 1 (RESOLVING): číselná adresa je přeložená hned, u jména karta čeká na server, takže první DNSRES po DNSREQ hlásí RESOLVING a teprve další výsledek. Emulace se ptá resolveru hostitele hned jako dřív, klient ale musí počítat s čekáním jako na kartě.
+
 	- Unicard uc3 - složka cesty delší než 32 znaků hlásí chybu 6 s FR_INVALID_NAME jako FatFS karty (FF_MAX_LFN 32), a to u každé operace s cestou (otevření, vytvoření, adresář, přejmenování, kopie...). Dřív emulace takový soubor na hostiteli vytvořila nebo našla. Soubor s delším jménem je jako na kartě dostupný jen jménem 8.3. uc1 se nemění.
 
 	- Unicard uc3 v0.37 (UC API rev 2) - MOUNTS: stavový bajt 2 během výstupu ukazuje zbytek aktuálního řádku jako firmware 0.37, který výstup vydává po řádcích (dřív zbytek celého výstupu, nejvýš 255). Cesta v řádku má jako ve firmwaru nejvýš 252 bajtů.

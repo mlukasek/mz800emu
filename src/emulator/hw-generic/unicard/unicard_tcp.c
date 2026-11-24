@@ -8,7 +8,8 @@
  * data wait in a buffer of UNICARD_TCP_BUF bytes until the Z80 reads them (TCPRECV, at most 253 B a time); what does
  * not fit stays in the host's socket (the firmware: the TCP window, the server waits). TCPSTATUS byte 1 is the
  * state of the connection (UNICARD_TCP_*), byte 0 is 1 only while connected. A connection the server closed keeps
- * its received data readable. DNS asks the host's resolver at once (DNSRES is then RESOLVED or UNKNOWN).
+ * its received data readable. DNS asks the host's resolver at once; as lwIP of the firmware a numeric address is
+ * RESOLVED at once, a name gives RESOLVING for the first DNSRES (the card waits for the server), then the result.
  * Non-blocking sockets: the emulation never waits for the network. TCP_NODELAY as the firmware 0.33 (no Nagle:
  * every key goes at once).
  */
@@ -48,6 +49,7 @@ static struct {
     int rx_len;
     uint8_t dns_state;
     uint8_t dns_ip[4];
+    uint8_t dns_asked;      /* a name (not a numeric address): the next DNSRES still RESOLVING */
 } s_tcp = { INVALID_SOCKET, UNICARD_TCP_NONE };
 
 
@@ -213,6 +215,7 @@ void unicard_tcp_send ( const uint8_t *data, int len ) {
 void unicard_dns_request ( const char *name ) {
     struct addrinfo hints, *res = NULL;
     memset ( s_tcp.dns_ip, 0, 4 );
+    s_tcp.dns_asked = 0;
     if ( !name || !name[0] ) {
         s_tcp.dns_state = UNICARD_DNS_BAD_ARGS;
         return;
@@ -224,7 +227,13 @@ void unicard_dns_request ( const char *name ) {
     memset ( &hints, 0, sizeof ( hints ) );
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST;
     if ( getaddrinfo ( name, NULL, &hints, &res ) || !res ) {
+        hints.ai_flags = 0; /* a name: the card asks its DNS server (lwIP ERR_INPROGRESS) */
+        s_tcp.dns_asked = 1;
+        res = NULL;
+    };
+    if ( !res && ( getaddrinfo ( name, NULL, &hints, &res ) || !res ) ) {
         s_tcp.dns_state = UNICARD_DNS_UNKNOWN;
         return;
     };
@@ -235,6 +244,12 @@ void unicard_dns_request ( const char *name ) {
 
 
 void unicard_dns_result ( uint8_t *out ) {
+    if ( s_tcp.dns_asked ) {
+        s_tcp.dns_asked = 0;
+        out[0] = UNICARD_DNS_RESOLVING; /* the firmware's dns_addr still the old one: 0.0.0.0 here */
+        memset ( &out[1], 0, 4 );
+        return;
+    };
     out[0] = s_tcp.dns_state;
     memcpy ( &out[1], s_tcp.dns_ip, 4 );
 }

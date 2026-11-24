@@ -22,6 +22,7 @@
 #include "hw-generic/unicard/unicard_ini.h"
 #include "hw-generic/unicard/unimgr_commands.h"
 #include "hw-generic/unicard/unimgr.h"
+#include "hw-generic/unicard/unicard_tcp.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
 #include "mzarch/mzarch.h"
@@ -820,6 +821,32 @@ void test_unicard_uc3_long_name_invalid(void)
     uc_close();
     unicard_set_fw(UNICARD_FW_UC3);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR, "uc1: 33 znaků projde");
+}
+
+
+/* DNS jako lwIP firmwaru: číselná adresa hned RESOLVED, jméno napřed jednou
+ * RESOLVING (karta se ptá serveru), pak výsledek. */
+void test_unicard_dns_resolving(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t r[5];
+    unicard_dns_request("127.0.0.1");
+    unicard_dns_result(r);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_DNS_RESOLVED, r[0], "číselná adresa hned");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(127, r[1], "127.0.0.1");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, r[4], "127.0.0.1");
+
+    unicard_dns_request("localhost");
+    unicard_dns_result(r);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_DNS_RESOLVING, r[0], "jméno: napřed RESOLVING");
+    unicard_dns_result(r);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_DNS_RESOLVED, r[0], "pak výsledek (localhost)");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(127, r[1], "localhost = 127.x");
+
+    unicard_dns_request("");
+    unicard_dns_result(r);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UNICARD_DNS_BAD_ARGS, r[0], "prázdné jméno");
 }
 
 
@@ -4177,6 +4204,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_cmdSIZE);
     RUN_TEST(test_unicard_status_eof_at_size);
     RUN_TEST(test_unicard_uc3_long_name_invalid);
+    RUN_TEST(test_unicard_dns_resolving);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);
     RUN_TEST(test_unicard_cmdSTAT_dir);

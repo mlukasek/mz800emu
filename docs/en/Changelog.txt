@@ -1,3 +1,5 @@
+	- Unicard - DNSRES reports state 1 (RESOLVING) as the firmware (lwIP) does: a numeric address is resolved at once, for a name the card waits for the server, so the first DNSRES after DNSREQ reports RESOLVING and only the next one the result. The emulation still asks the host's resolver at once, but a client has to allow for the wait as on the card.
+
 	- Unicard uc3 - a path component longer than 32 characters reports error 6 with FR_INVALID_NAME as the card's FatFS does (FF_MAX_LFN 32), on every operation with a path (open, create, directory, rename, copy ...). Before the emulation created or found such a file on the host. A file with a longer name is reachable only by its 8.3 name, as on the card. uc1 is unchanged.
 
 	- Unicard uc3 v0.37 (UC API rev 2) - MOUNTS: status byte 2 during the output gives the rest of the current line as firmware 0.37 does, which hands the output out line by line (before the rest of the whole output, at most 255). The path in a line has at most 252 bytes as in the firmware.
