@@ -133,7 +133,10 @@ class Relay:
         ready = sum(1 << m["slot"] for m in room["members"] if m["ready"])
         for m in room["members"]:
             m["send"](json.dumps({"op": "members", "count": len(room["members"]), "ready": ready}))
-        if len(room["members"]) >= 2 and all(m["ready"] for m in room["members"]):
+        # start jednou, až jsou ready všichni přítomní (jako relay.py BomberNetu: další NETREADY ho neopakuje,
+        # "start" na kartě maže okno vstupů)
+        if not room.get("running") and len(room["members"]) >= 2 and all(m["ready"] for m in room["members"]):
+            room["running"] = True
             mask = sum(1 << m["slot"] for m in room["members"])
             for m in room["members"]:
                 m["send"](json.dumps({"op": "start", "seed": 4660, "frame": 0, "mask": mask}))
