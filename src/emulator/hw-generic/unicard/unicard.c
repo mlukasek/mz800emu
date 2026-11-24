@@ -811,14 +811,18 @@ static int unicard_detect_mzfloader_cfg_variant ( const char *unimgr_dir ) {
 }
 
 
-/* Detekuje typ boot loaderu uvnitř {SD}/unicard/mzfloader.mzq podle
- * fname uloženého v MZQ MZF_HEAD bloku (bytes 16..31, ukončený 0x0d).
+static char* unicard_qd_image_path ( int *from_cfg );
+
+
+/* Detekuje typ boot loaderu v obrazu QD karty (obraz z /unicard/qd.cfg,
+ * bez něj {SD}/unicard/mzfloader.mzq) podle fname uloženého v MZQ
+ * MZF_HEAD bloku (bytes 16..31, ukončený 0x0d).
  *   "UNIBOOT V2.0" -> uc1 (klasický rev.60 loader, viz MZFLOADER_MZF)
  *   "SC3SROM"      -> uc3 (V2.11b ekosystém)
  *   jiné / soubor chybí -> -1 (neznámé)
  */
-static int unicard_detect_mzfloader_variant ( const char *unimgr_dir ) {
-    char *mzfloader_path = g_build_filename ( unimgr_dir, UNICARD_UNIMGR_MZFLOADER_MZQ, NULL );
+static int unicard_detect_mzfloader_variant ( void ) {
+    char *mzfloader_path = unicard_qd_image_path ( NULL );
     int variant = -1;
 
     FILE *fp = baseui_tools_file_open ( mzfloader_path, "rb" );
@@ -886,7 +890,7 @@ en_UNICARD_RUNTIME_CHECK unicard_detect_runtime_fw ( void ) {
      *   "UNIBOOT V2.0" -> uc1
      *   "SC3SROM"      -> uc3
      *   soubor chybí nebo nelze rozpoznat -> -1. */
-    int mzq_variant = unicard_detect_mzfloader_variant ( unimgr_dir );
+    int mzq_variant = unicard_detect_mzfloader_variant ( );
 
     /* 3) Detekce verze podle obsahu mzfloader.cfg (cesta k MGR
      * souboru). cfg musí ukazovat na MGR variantu odpovídající uc1
@@ -1007,11 +1011,35 @@ int unicard_reinit_sd_for_current_fw ( void ) {
 }
 
 
-char* unicard_get_mzfloader_image_filepath ( void ) {
-    if ( UNICARD_TEST_IS_CONNECTED ) {
-        return g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, UNICARD_UNIMGR_MZFLOADER_MZQ, NULL );
+/* The QD image of the card regardless of the connection (the runtime check runs before it): see
+ * unicard_get_qd_image_filepath. */
+static char* unicard_qd_image_path ( int *from_cfg ) {
+    char cfg[256];
+    if ( from_cfg ) *from_cfg = 0;
+    if ( unicard_mount_cfg_get ( 5, cfg, sizeof ( cfg ) ) > 0 ) {        /* 5 = the unit Q: /unicard/qd.cfg */
+        if ( from_cfg ) *from_cfg = 1;
+        /* like FDC_setFDfromCFG: a relative path from the SD root */
+        char *card = ( cfg[0] == '/' ) ? g_strdup ( cfg ) : g_strconcat ( "/", cfg, NULL );
+        char *full = unicard_jail_resolve ( card );
+        g_free ( card );
+        return full ? full : g_strdup ( "" );
     };
-    return (char*) baseui_tools_mem_alloc0 ( 1 );
+    return g_build_filename ( unicard_get_sd_root_dirpath ( ), UNICARD_UNIMGR_DIR, UNICARD_UNIMGR_MZFLOADER_MZQ, NULL );
+}
+
+
+char* unicard_get_qd_image_filepath ( int *from_cfg ) {
+    if ( UNICARD_TEST_IS_CONNECTED ) return unicard_qd_image_path ( from_cfg );
+    if ( from_cfg ) *from_cfg = 0;
+    return g_strdup ( "" );
+}
+
+
+void unicard_qd_reload ( void ) {
+    if ( UNICARD_TEST_IS_CONNECTED && QDISK_TEST_CONNECTED && QDISK_TEST_TYPE_UNICARD ) {
+        qdisk_close ( );
+        qdisk_open ( );
+    };
 }
 
 
@@ -1211,11 +1239,9 @@ void unicard_reset ( void ) {
      * uživatel mezitím soubor do SD doplnil a očekává, že po stisknutí
      * Reset se začne bootovat z reálného mzfloader.mzq, ne stále z SDERR.
      * qdisk_close + qdisk_open re-evaluuje existenci souboru a vybere
-     * příslušný mount (file nebo fallback). */
-    if ( QDISK_TEST_CONNECTED && QDISK_TEST_TYPE_UNICARD ) {
-        qdisk_close ( );
-        qdisk_open ( );
-    };
+     * příslušný mount (file nebo fallback). Firmware při resetu MZ také
+     * znovu čte /unicard/qd.cfg (emu_FS_reset -> emu_QD_init). */
+    unicard_qd_reload ( );
 }
 
 

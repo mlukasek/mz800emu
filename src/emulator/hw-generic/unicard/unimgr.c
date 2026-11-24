@@ -1555,7 +1555,9 @@ void do_cmdOPEN ( en_UNIMGR_CMDSTATE cmd_phase ) {
  *     chybu (disk je přesto venku); když konfigurace nebyla, chyba a nic;
  *   - neexistující obraz: konfigurace zůstane zapsaná, mechanika je prázdná,
  *     chyba;
- *   - jednotky 4-7 (RAM disk, QD, EMM, SASI): emulátor pro ně přes Unicard
+ *   - QD (jednotka 5): mechanika QD karty se znovu otevře podle qd.cfg
+ *     (emu_QD_init); úspěch, když obraz existuje;
+ *   - jednotky 4, 6, 7 (RAM disk, EMM, SASI): emulátor pro ně přes Unicard
  *     nemá backend, zapíše se jen konfigurace; úspěch, když obraz existuje.
  */
 static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
@@ -1573,6 +1575,8 @@ static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
 
     if ( path[0] == 0x00 ) {
         if ( dev_id <= 3 ) unicard_fdc_mount ( dev_id, path );
+        /* QD bez qd.cfg: karta pak QD nemá, emulace zase svůj /unicard/mzfloader.mzq */
+        if ( dev_id == 5 ) unicard_qd_reload ( );
         /* fw 0.26: načtení bez konfigurace = chyba (disk je přesto venku).
          * UC API rev 2: vysunutí hlásí OK. */
         if ( unicard_get_api_rev2 ( ) ) g_unimgr.sts_err = UNIMGR_STS_OK;
@@ -1585,6 +1589,8 @@ static void unimgr_mount_uc3 ( uint8_t dev_id, char *path ) {
         char *p = ( path[0] == '/' ) ? g_strdup ( path ) : g_strconcat ( "/", path, NULL );
         unicard_fdc_mount ( dev_id, exists ? p : "" );
         g_free ( p );
+    } else if ( dev_id == 5 ) {
+        unicard_qd_reload ( );
     } else {
         fprintf ( stderr, "WARNING: Unicard cmdMOUNT: device id %u - only the configuration is written in emulation\n",
                   dev_id );

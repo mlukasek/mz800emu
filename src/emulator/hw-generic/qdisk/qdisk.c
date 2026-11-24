@@ -736,7 +736,8 @@ void qdisk_open ( void ) {
         ui_qdisk_set_std_path ( filepath );
     } else if ( g_qdisk.type == QDISK_TYPE_UNICARD ) {
         if ( UNICARD_TEST_IS_CONNECTED ) {
-            filepath = unicard_get_mzfloader_image_filepath ( );
+            int from_cfg = 0;
+            filepath = unicard_get_qd_image_filepath ( &from_cfg );
 
             /* uc3 SDERR fallback: pokud {SD}/unicard/mzfloader.mzq
              * neexistuje, sestavíme MZQ image v RAM z embedded SDERR
@@ -748,12 +749,18 @@ void qdisk_open ( void ) {
              * file mount cestu (kde existující chyba zůstává). */
             uint8_t fallback_buff[ 92 + 0x10000 ];
             uint32_t fallback_size = 0;
-            if ( !g_file_test ( filepath, G_FILE_TEST_IS_REGULAR ) ) {
+            int missing = !g_file_test ( filepath, G_FILE_TEST_IS_REGULAR );
+            if ( missing && !from_cfg ) {
                 fallback_size = unicard_build_fallback_mzq ( fallback_buff,
                                                              sizeof ( fallback_buff ) );
             };
 
-            if ( fallback_size > 0 ) {
+            if ( missing && from_cfg ) {
+                /* /unicard/qd.cfg names an image that is not there: the card has no QD then (emu_QD_init) */
+                fprintf ( stderr, "WARNING: Unicard QD: the image '%s' from /unicard/qd.cfg is not on the SD card:"
+                          " no QD (as on the card)\n", filepath );
+                qdisk_open_image_internal ( "", QDISK_STORAGE_CACHED, 1, 1 );
+            } else if ( fallback_size > 0 ) {
                 fprintf ( stderr,
                           "WARNING: Unicard QD bootstrap: '%s' not found, "
                           "mounting embedded SDERR fallback image (R/O, in-memory, %u B)\n",
@@ -1747,7 +1754,7 @@ void qdisk_apply_storage_mode_switch ( const char *target_mode ) {
     if ( ! ( g_qdisk.status & QDSTS_IMG_READY ) ) return;
 
     /* qdisk_close + qdisk_open: open precte aktualni filepath z CFGELM
-     * (mz1f11_std_filepath pro IMAGE, unicard_get_mzfloader_image_filepath
+     * (mz1f11_std_filepath pro IMAGE, unicard_get_qd_image_filepath
      * pro UNICARD) a aplikuje novy storage_mode pres novou volbu driveru.
      *
      * POZN: existujici dirty RAM zmeny CACHED -> jiny mode by se ztratily

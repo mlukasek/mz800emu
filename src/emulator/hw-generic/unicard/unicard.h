@@ -237,7 +237,20 @@ extern "C" {
     extern void unicard_init ( void );
     extern void unicard_exit ( void );
     extern void unicard_reset ( void );
-    extern char* unicard_get_mzfloader_image_filepath ( void );
+    /**
+     * @brief The host path of the QD image the card boots from (the firmware's emu_QD_init).
+     *
+     * The firmware opens the image named in {SD}/unicard/qd.cfg (written by MOUNT of the unit Q; a relative path
+     * from the SD root) at power on, at a reset of the MZ and after MOUNT of the unit Q; without qd.cfg the card
+     * has no QD. The emulation then takes its own {SD}/unicard/mzfloader.mzq (the SD cards it sets up have no
+     * qd.cfg). Not connected: an empty string.
+     *
+     * @param from_cfg when not NULL: 1 = the path comes from qd.cfg (a missing image = no QD, as on the card)
+     * @return the path (g_free); an empty string = no QD
+     */
+    extern char* unicard_get_qd_image_filepath ( int *from_cfg );
+    /** @brief Opens the card's QD image again (MOUNT of the unit Q, a reset of the MZ) if the QD is the card's. */
+    extern void unicard_qd_reload ( void );
     extern void unicard_set_connected ( en_UNICARD_CONNECTION conn );
 
     /**

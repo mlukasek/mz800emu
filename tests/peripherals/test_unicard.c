@@ -26,6 +26,7 @@
 #include "hw-generic/unicard/unicard_net.h"
 #include "hw-generic/unicard/unicard_opencpu.h"
 #include "hw-generic/gdg/gdgclk.h"
+#include "hw-generic/qdisk/qdisk.h"
 #include "mzarch/mz800/memory/mz800_memory.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
@@ -2970,6 +2971,53 @@ void test_unicard_mount_eject_uc3_error(void)
 }
 
 
+/* Jméno obrazu, který má mechanika QD karty otevřený ("" = žádný). */
+static const char *qd_image_name(void)
+{
+    static char name[256];
+    name[0] = 0x00;
+    if (!(g_qdisk.status & QDSTS_IMG_READY)) return name;
+    char *base = g_path_get_basename(g_qdisk.filename);
+    g_strlcpy(name, base, sizeof(name));
+    g_free(base);
+    return name;
+}
+
+/* QD karty jako firmware (emu_QD_init): obraz podle /unicard/qd.cfg (cesta od kořene SD) po resetu MZ i po
+ * MOUNT jednotky Q; qd.cfg na chybějící obraz = bez QD; bez qd.cfg vlastní /unicard/mzfloader.mzq emulace. */
+void test_unicard_qd_cfg(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("mzfloader.mzq", qd_image_name(), "bez qd.cfg /unicard/mzfloader.mzq");
+
+    char *dir = g_build_filename(s_test_sd_root, "MZQ", NULL);
+    g_mkdir(dir, 0755);
+    g_free(dir);
+    create_test_file("MZQ/boot.mzq", 2048);
+    create_test_file("MZQ/game.mzq", 2048);
+    char *cfg = g_build_filename(s_test_sd_root, UNICARD_UNIMGR_DIR, "qd.cfg", NULL);
+    g_file_set_contents(cfg, "/MZQ/boot.mzq", -1, NULL);       /* jak ji zapíše manažer: bez konce řádku */
+    unicard_reset();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("boot.mzq", qd_image_name(), "reset MZ: obraz z qd.cfg");
+
+    uc_mount(5, "MZQ/game.mzq");                                /* relativní cesta je od kořene SD */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "MOUNT Q existujícího obrazu = OK");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("game.mzq", qd_image_name(), "MOUNT Q přepne obraz hned");
+
+    g_file_set_contents(cfg, "/MZQ/none.mzq", -1, NULL);
+    unicard_reset();
+    TEST_ASSERT_TRUE_MESSAGE(QDISK_TEST_CONNECTED, "QD zůstane připojená");
+    TEST_ASSERT_EQUAL_MESSAGE(0, g_qdisk.status & QDSTS_IMG_READY, "qd.cfg na chybějící obraz: bez QD jako karta");
+
+    uc_mount(5, "");                                            /* vysunutí qd.cfg smaže */
+    TEST_ASSERT_FALSE_MESSAGE(g_file_test(cfg, G_FILE_TEST_EXISTS), "qd.cfg se smaže");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("mzfloader.mzq", qd_image_name(), "bez qd.cfg zase /unicard/mzfloader.mzq");
+    g_free(cfg);
+    unicard_set_managed_fdc(UNICARD_MANAGED_FDC_FDC0);
+}
+
+
 /* Relativní cesta je od kořene SD (ne od CWD) a zapíše se, jak přišla; cesta
  * v CP852 se zapíše v CP852. */
 void test_unicard_mount_relative_and_cp852(void)
@@ -4804,6 +4852,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_mount_cfg_names_4_7);
     RUN_TEST(test_unicard_mount_missing_image);
     RUN_TEST(test_unicard_mount_eject_uc3_error);
+    RUN_TEST(test_unicard_qd_cfg);
     RUN_TEST(test_unicard_mount_relative_and_cp852);
 
     /* cmdRTCSETD / cmdRTCSETT (uc3). */
