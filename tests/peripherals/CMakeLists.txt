@@ -28,6 +28,13 @@ mz_add_test(unicard
     LABELS   "emu;peripherals"
 )
 
+# Interpret Cortex-M4 pro OpenCPU Unicard: program z tests/data/armcm4 (armcc) proti hostiteli.
+mz_add_test(armcm4
+    TYPE     EMU
+    SOURCES  test_armcm4.c
+    LABELS   "emu;peripherals"
+)
+
 mz_add_test(wd279x
     TYPE     EMU
     SOURCES  test_wd279x.c

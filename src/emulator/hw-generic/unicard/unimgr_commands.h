@@ -451,6 +451,13 @@ extern "C" {
 #define cmdNETMSG       0xA8    // komu, délka, 32 B
 #define cmdNETRECV      0xA9    // 34 B: od (FFh = nic), délka, 32 B
 
+/* OpenCPU (uc3 v0.37 na MZ-800, mk3b fw 0.36+, NOBOMI): kód ARM z MZ v SRAM3 karty, unicard_opencpu.c. */
+#define cmdCPUADDR      0xCA    // 4 B adresa (0x20020000-0x2002FFFF) pro CBh, CCh, CEh
+#define cmdCPUWRITE     0xCB    // 1 B: zápis, adresa +1
+#define cmdCPUREAD      0xCC    // 1 B výstup, adresa +1
+#define cmdCPUCALL      0xCD    // 4 B adresa (bit 0 = Thumb): spustí; do návratu čte port 51h CDh
+#define cmdCPUREAD16    0xCE    // 16 B výstup, adresa +16
+
 /* INFO [8-9]: příznaky UC (WORD LE). */
 #define UC_INFO_CONFIG      0x0001  // GETCONFIG 92h, SETCONFIG 99h
 #define UC_INFO_MOUNTS      0x0002  // MOUNTS 98h

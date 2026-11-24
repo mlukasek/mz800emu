@@ -249,6 +249,7 @@
 #include "unimgr.h"
 #include "unicard_tcp.h"
 #include "unicard_net.h"
+#include "unicard_opencpu.h"
 #include "mzarch/mzarch.h"
 
 #ifdef UNICARD_EMULATED
@@ -1232,6 +1233,63 @@ static int unimgr_cloud_busy ( int is_cmd, uint8_t data ) {
  * TCPSEND 85h: WORD length (bit 15 = now) and the data (X); TCPRECV 86h: WORD max in, WORD n and n bytes out
  * (n <= 253); DNSREQ 88h: the name (S); DNSRES 89h: 5 B out (status, IP).
  */
+/* OpenCPU: OK, or an error (1 NOT_IMPLEMENTED without OpenCPU, 2 BAD_PARAM for an address outside SRAM3) */
+static void opencpu_done ( int ok ) {
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    if ( ok ) {
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+        return;
+    };
+    g_unimgr.sts_err = UNIMGR_STS_ERROR;
+    g_unimgr.err_code = unicard_opencpu_available ( ) ? UC_ERR_BAD_PARAM : UC_ERR_NOT_IMPLEMENTED;
+}
+
+
+/**
+ * OpenCPU CAh-CEh (UC API rev 2 na MZ-800, firmware mk3b 0.36+): kód ARM z MZ v SRAM3 karty, unicard_opencpu.c.
+ * CAh adresa, CBh zápis bajtu, CCh a CEh čtení (1 a 16 B), CDh volání.
+ */
+static void do_cmdCPU ( en_UNIMGR_CMDSTATE cmd_phase ) {
+    uint8_t *b = g_unimgr.buf_byte;
+    if ( UNIMGR_CMDSTATE_START == cmd_phase ) {
+        switch ( g_unimgr.cmd ) {
+            case cmdCPUREAD:
+            case cmdCPUREAD16:
+            {
+                if ( !unicard_opencpu_available ( ) ) {
+                    opencpu_done ( 0 );
+                    return;
+                };
+                int n = ( cmdCPUREAD16 == g_unimgr.cmd ) ? 16 : 1;
+                for ( int i = 0; i < n; i++ ) b[i] = unicard_opencpu_read ( );
+                g_unimgr.buf = b;
+                g_unimgr.buf_count = (uint16_t) n;
+                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+                g_unimgr.sts_err = UNIMGR_STS_OK;
+                return;
+            }
+            case cmdCPUWRITE:
+                g_unimgr.param_format = "B";
+                break;
+            default:
+                g_unimgr.param_format = "BBBB";
+                break;
+        };
+        unimgr_input_params ( cmd_phase, 0 );
+        return;
+    };
+    uint32_t a = b[0] | ( b[1] << 8 ) | ( b[2] << 16 ) | ( (uint32_t) b[3] << 24 );
+    switch ( g_unimgr.cmd ) {
+        case cmdCPUADDR: opencpu_done ( unicard_opencpu_set_addr ( a ) );
+            break;
+        case cmdCPUWRITE: opencpu_done ( unicard_opencpu_write ( b[0] ) );
+            break;
+        default: opencpu_done ( unicard_opencpu_call ( a ) );
+            break;
+    };
+}
+
+
 /* NET: an error into status byte 2, or the output */
 static void do_cmdNET_finish ( int res, int len, const uint8_t *out ) {
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
@@ -1951,6 +2009,20 @@ static void unimgr_write_CMD ( uint8_t data ) {
             };
             break;
 
+        /* OpenCPU (UC API rev 2 na MZ-800, unicard_opencpu.c) */
+        case cmdCPUADDR:
+        case cmdCPUWRITE:
+        case cmdCPUREAD:
+        case cmdCPUCALL:
+        case cmdCPUREAD16:
+            if ( unicard_get_api_rev2 ( ) ) {
+                do_cmdCPU ( UNIMGR_CMDSTATE_START );
+            } else {
+                fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
+                          __func__, __LINE__, g_unimgr.cmd );
+            };
+            break;
+
         /* NET (UC API rev 2, unicard_net.c on the host's sockets) */
         case cmdNETSTATUS:
         case cmdNETCREATE:
@@ -2115,6 +2187,12 @@ static void unimgr_write_param ( uint8_t data ) {
         case cmdNETHASH:
         case cmdNETMSG:
             do_cmdNET ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdCPUADDR:
+        case cmdCPUWRITE:
+        case cmdCPUCALL:
+            do_cmdCPU ( UNIMGR_CMDSTATE_PARAMOK );
             break;
 
         default:
@@ -2292,6 +2370,8 @@ static uint8_t unimgr_read_DATA ( void ) {
             case cmdNETREADY:
             case cmdNETPOLL:
             case cmdNETRECV:
+            case cmdCPUREAD:
+            case cmdCPUREAD16:
                 ret = unimgr_output_data_bin ( );
                 break;
 

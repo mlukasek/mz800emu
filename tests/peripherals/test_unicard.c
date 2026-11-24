@@ -24,6 +24,8 @@
 #include "hw-generic/unicard/unimgr.h"
 #include "hw-generic/unicard/unicard_tcp.h"
 #include "hw-generic/unicard/unicard_net.h"
+#include "hw-generic/unicard/unicard_opencpu.h"
+#include "mzarch/mz800/memory/mz800_memory.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
 #include "mzarch/mzarch.h"
@@ -4088,7 +4090,7 @@ void test_unicard_getconfig_status_rev2(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "VERSION=MZ800 v0.37|"), "VERSION jako REV");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=OFF|"), "bez TIMEZONE NTP=OFF");
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "CLOUD=OFF|"), "bez cloudu CLOUD=OFF (firmware 0.37 vždy)");
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "OPENCPU=0|"), "OPENCPU=0 (emulátor nespustí ARM)");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "OPENCPU=1|"), "OPENCPU=1 (interpret Cortex-M4)");
     write_unicard_cfg("network.cfg", "TIMEZONE=CET-1CEST,M3.5.0,M10.5.0/3\n");
     uc_getconfig("STATUS", out, sizeof(out));
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "NTP=KEPT|"), "s TIMEZONE: hodiny emulace nastavené (KEPT)");
@@ -4600,6 +4602,74 @@ void test_unicard_net_cfg(void)
 }
 
 
+/* OpenCPU CAh-CEh (UC API rev 2 na MZ-800): adresa mimo SRAM3, zápis a čtení s posunem a přetečením na začátek,
+ * CEh, volání kódu (zapíše do SRAM3 a přes ukazatel z 0x08008228 do kopie VRAM = rovina I), port 51h během běhu
+ * CDh, reset počítače SRAM3 smaže; fw 0.26 příkazy nezná. */
+void test_unicard_opencpu_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    static const uint8_t code[] = {
+        0x42, 0x20,             /* movs r0, #0x42 */
+        0x40, 0xf2, 0x00, 0x11, /* movw r1, #0x0100 */
+        0xc2, 0xf2, 0x02, 0x01, /* movt r1, #0x2002 */
+        0x08, 0x70,             /* strb r0, [r1] */
+        0x48, 0xf2, 0x28, 0x22, /* movw r2, #0x8228 */
+        0xc0, 0xf6, 0x00, 0x02, /* movt r2, #0x0800 */
+        0x12, 0x68,             /* ldr r2, [r2]   (the address of the VRAM copy) */
+        0xff, 0x23,             /* movs r3, #0xff */
+        0x13, 0x70,             /* strb r3, [r2]  (plane I, byte 0) */
+        0x70, 0x47,             /* bx lr */
+    };
+    uint8_t out[16];
+    uc_send_cmd(cmdRESET);
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_ERROR, uc_master_status() & UNICARD_STS_ERROR, "fw 0.26: CAh = ERROR");
+
+    unicard_set_api_rev2(1);
+    uc_send_cmd(cmdRESET);
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x03\x20", 4);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, net_error(), "adresa za SRAM3: BAD_PARAM");
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\xff\xff\x02\x20", 4);
+    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x11", 1);
+    net_cmd(cmdCPUWRITE, (const uint8_t *)"\x22", 1);       /* za koncem SRAM3 od začátku */
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\xff\xff\x02\x20", 4);
+    net_cmd(cmdCPUREAD, NULL, 0);
+    net_out(out, 1);
+    TEST_ASSERT_EQUAL_HEX8(0x11, out[0]);
+    net_cmd(cmdCPUREAD, NULL, 0);
+    net_out(out, 1);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x22, out[0], "adresa přetekla na 0x20020000");
+
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
+    for (size_t i = 0; i < sizeof(code); i++) net_cmd(cmdCPUWRITE, &code[i], 1);
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x00\x02\x20", 4);
+    net_cmd(cmdCPUREAD16, NULL, 0);
+    net_out(out, 16);
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(code, out, 16, "CEh: 16 B kódu");
+
+    g_memoryVRAM_I[0] = 0x00;
+    net_cmd(cmdCPUCALL, (const uint8_t *)"\x01\x00\x02\x20", 4);
+    TEST_ASSERT_EQUAL_HEX8(0, uc_master_status() & UNICARD_STS_ERROR);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xCD, uc_recv_data(), "kód běží: port 51h čte CDh");
+    unicard_opencpu_finish();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xFF, g_memoryVRAM_I[0], "kód zapsal do kopie VRAM (rovina I)");
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x01\x02\x20", 4);
+    net_cmd(cmdCPUREAD, NULL, 0);
+    net_out(out, 1);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x42, out[0], "kód zapsal do SRAM3");
+    net_cmd(cmdCPUCALL, (const uint8_t *)"\x00\x00\x03\x20", 4);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(UC_ERR_BAD_PARAM, net_error(), "volání mimo SRAM3");
+
+    unicard_reset();                                /* SRAM3 si bere zpátky cache RAM disku */
+    net_cmd(cmdCPUADDR, (const uint8_t *)"\x00\x01\x02\x20", 4);
+    net_cmd(cmdCPUREAD, NULL, 0);
+    net_out(out, 1);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, out[0], "po resetu SRAM3 prázdná");
+}
+
+
 int main(int argc, char *argv[])
 {
     mztest_parse_args(argc, argv);
@@ -4764,6 +4834,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_net_join_errors);
     RUN_TEST(test_unicard_net_websocket);
     RUN_TEST(test_unicard_net_cfg);
+    RUN_TEST(test_unicard_opencpu_rev2);
 
     int result = UNITY_END();
 

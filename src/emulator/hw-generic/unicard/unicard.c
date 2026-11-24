@@ -45,6 +45,7 @@
 #include "unicard_ini.h"
 #include "unimgr.h"
 #include "unicard_net.h"
+#include "unicard_opencpu.h"
 #include "replay.h"
 #include "MGR_V24_MZF.h"
 #include "MGR800_V211B_MZF.h"
@@ -1200,6 +1201,7 @@ void unicard_reset ( void ) {
     if ( !UNICARD_TEST_IS_CONNECTED ) return;
     unimgr_reset ( );
     unicard_net_reset ( ); // NET: reset počítače opustí místnost a zavře spojení s relay (firmware mk3b)
+    unicard_opencpu_reset ( ); // OpenCPU: SRAM3 si po resetu bere zpátky cache RAM disku
     unimgr_rkey_clear ( ); // vzdálené klávesy z doby před resetem zahodit (firmware mk3b 0.37)
 
     /* QD bootstrap remount na machine reset:
@@ -1248,7 +1250,8 @@ void unicard_write_byte ( uint16_t port, uint8_t data ) {
             int fast = unimgr_write_fast ( port & 0x01, data );
             unimgr_write_byte ( port & 0x01, data, (uint8_t) ( port >> 8 ) );
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
-                unicard_cpu_wait ( fast ? UNICARD_UC3_WAIT.write_fast : UNICARD_UC3_WAIT.write );
+                /* OpenCPU: the main loop runs the ARM code, what it serves waits for its end */
+                unicard_cpu_wait ( fast ? UNICARD_UC3_WAIT.write_fast : UNICARD_UC3_WAIT.write + unicard_opencpu_busy_cpu ( ) );
             };
             break;
         }
@@ -1265,11 +1268,19 @@ uint8_t unicard_read_byte ( uint16_t port ) {
         case 0x50:
         case 0x51:
         {
+            /* OpenCPU: while the ARM code runs, the bus interrupt reads CDh from the data port (firmware
+             * emu_MZFREPO_read_interrupt) and the main loop serves nothing else */
+            uint32_t busy = unicard_opencpu_busy_cpu ( );
+            if ( unicard_opencpu_busy_ticks ( ) && ( ( port & 0xff ) == 0x51 ) ) {
+                unicard_cpu_wait ( UNICARD_UC3_WAIT.file_read );
+                ret = 0xCD;
+                break;
+            };
             int fast = unimgr_read_fast ( port & 0x01 );
             ret = unimgr_read_byte ( port & 0x01 );
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
-                unicard_cpu_wait ( ( ( port & 0xff ) == 0x50 ) ? UNICARD_UC3_WAIT.status_read
-                                   : fast ? UNICARD_UC3_WAIT.file_read : UNICARD_UC3_WAIT.data_read );
+                unicard_cpu_wait ( ( ( port & 0xff ) == 0x50 ) ? UNICARD_UC3_WAIT.status_read + busy
+                                   : fast ? UNICARD_UC3_WAIT.file_read : UNICARD_UC3_WAIT.data_read + busy );
             };
             break;
         }
@@ -3028,9 +3039,9 @@ GPtrArray* unicard_config_get ( const char *section ) {
     } else {
         unicard_config_add ( st, "CLOUD", "OFF" ); // firmware 0.37 klíč hlásí vždy
     };
-    /* OPENCPU (firmware 0.37 pro MZ-800): 1 = karta s F429 umí spustit kód ARM z MZ. Emulátor ARM nespustí
-     * (jako karta s F407). */
-    unicard_config_add ( st, "OPENCPU", "0" );
+    /* OPENCPU (firmware 0.37 pro MZ-800): 1 = karta s F429 umí spustit kód ARM z MZ. Emulace ho spouští
+     * v interpretu Cortex-M4 (unicard_opencpu.c), jen uc3 v0.37 na MZ-800. */
+    unicard_config_add ( st, "OPENCPU", unicard_opencpu_available ( ) ? "1" : "0" );
     g_ptr_array_free ( recs, TRUE );
     return st;
 }
