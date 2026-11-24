@@ -1718,6 +1718,14 @@ void mzarch_main_reset_now(void)
     mzarch_main_reset();
 }
 
+void mzarch_main_hw_reset_request(void)
+{
+    if (g_mzarch_main.reset_request_mutex == NULL) return;
+    APP_MUTEX_LOCK(g_mzarch_main.reset_request_mutex);
+    g_mzarch_main.reset_request = true;
+    APP_MUTEX_UNLOCK(g_mzarch_main.reset_request_mutex);
+}
+
 void mzarch_main(void)
 {
     mzarch_main_reset();

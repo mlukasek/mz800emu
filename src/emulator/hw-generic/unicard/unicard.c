@@ -1207,7 +1207,7 @@ void unicard_write_byte ( uint16_t port, uint8_t data ) {
     switch ( port & 0xff ) {
         case 0x50:
         case 0x51:
-            unimgr_write_byte ( port & 0x01, data );
+            unimgr_write_byte ( port & 0x01, data, (uint8_t) ( port >> 8 ) );
             break;
         default:
             fprintf ( stderr, "%s():%d - Unsupported Unicard port 0x%02x\n", __func__, __LINE__, port );

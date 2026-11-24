@@ -248,6 +248,7 @@
 #include "unicard_ini.h"
 #include "unimgr.h"
 #include "unicard_tcp.h"
+#include "mzarch/mzarch.h"
 
 #ifdef UNICARD_EMULATED
 const char FIRMWARE_REVISION[] = "mz800emu/rev.01"; //"trunk/rev.60";
@@ -1556,6 +1557,40 @@ int unimgr_init ( void ) {
 }
 
 
+/*
+ * Příkazy uc3, které emulace jen potvrdí nebo vyřídí bez dalšího stavu
+ * (firmware mk3b 0.26 i 0.37):
+ *  - BOOT 07h: reset počítače (jako SHARP_reset_sync firmwaru);
+ *  - INTCALLER 11h: 1 B, kdo vyvolal přerušení; emulace přerušení karty
+ *    nemá, tedy 0;
+ *  - USHELLON 70h, USHELLOFF 71h: shell karty na USART1 (emulace USART
+ *    nemá): OK;
+ *  - USARTBPS 72h: 4 B rychlosti USART1, pak OK.
+ */
+static void do_cmdUC3 ( void ) {
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+    switch ( g_unimgr.cmd ) {
+        case cmdBOOT:
+            printf ( "INFO: Unicard BOOT - computer reset\n" );
+            mzarch_main_hw_reset_request ( );
+            break;
+        case cmdINTCALLER:
+            g_unimgr.buf_byte[0] = 0x00;
+            g_unimgr.buf = g_unimgr.buf_byte;
+            g_unimgr.buf_count = 1;
+            g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+            break;
+        case cmdUSARTBPS:
+            g_unimgr.param_format = "BBBB";
+            unimgr_input_params ( UNIMGR_CMDSTATE_START, 0 );
+            break;
+        default:
+            break;
+    };
+}
+
+
 static void unimgr_write_CMD ( uint8_t data ) {
 
     //printf ( "cmd: 0x%02x\n", data );
@@ -1863,20 +1898,17 @@ static void unimgr_write_CMD ( uint8_t data ) {
             };
             break;
 
-        /* uc3-only příkazy: protokolově akceptujeme (CMD_OK, žádný
-         * error status), ale tiše ignorujeme + console warning.
-         * Klient ne-MZ závislý kód nezhroutí, ale ztratí očekávanou
-         * funkčnost (BOOT, GDGSYNC). V uc1 simulaci
-         * tytéž opcody spadnou do default-case "Not implemented"
-         * (uc1 firmware je vůbec nezná). */
+        /* uc3 příkazy (firmware mk3b 0.26 i 0.37). V uc1 simulaci tytéž
+         * opcody spadnou do "Not implemented" (uc1 firmware je nezná).
+         * GDGSYNC uc3 obslouží unimgr_write_byte() před příkazem. */
         case cmdBOOT:
         case cmdGDGSYNC:
+        case cmdINTCALLER:
+        case cmdUSHELLON:
+        case cmdUSHELLOFF:
+        case cmdUSARTBPS:
             if ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) {
-                fprintf ( stderr,
-                    "WARNING: Unicard cmd 0x%02x ignored - uc3 feature not yet emulated\n",
-                    g_unimgr.cmd );
-                g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
-                g_unimgr.sts_err = UNIMGR_STS_OK;
+                do_cmdUC3 ( );
             } else {
                 /* uc1 simulace - jako u jakéhokoli neznámého opcodu. */
                 fprintf ( stderr, "%s():%d - Not implemented UNIMGR command 0x%02x!\n",
@@ -1933,6 +1965,11 @@ static void unimgr_write_param ( uint8_t data ) {
 
         case cmdSEEK:
             do_cmdSEEK ( UNIMGR_CMDSTATE_PARAMOK );
+            break;
+
+        case cmdUSARTBPS:
+            g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE; // 4 B rychlost USART1 (emulace USART nemá)
+            g_unimgr.sts_err = UNIMGR_STS_OK;
             break;
 
         case cmdMKDIR:
@@ -2015,10 +2052,50 @@ static void unimgr_write_DATA ( uint8_t data ) {
 }
 
 
-void unimgr_write_byte ( en_UNIMGR_ADDR addr, uint8_t data ) {
+/*
+ * GDGSYNC 0Bh (uc3) - zápis na příkazový port s posloupností v horním bajtu
+ * adresy (OUT (C),A, v B): 55h, AAh, hodnota (do 49 nebo FFh), hodnota xor FFh.
+ * FFh resetuje počítač, ostatní hodnoty nastaví obraz výstupu VGA karty
+ * (emulace ho nemá). Jako ve firmwaru mk3b (0.26 i 0.37) se stav repozitáře
+ * nemění, ani během COPY; jiný bajt posloupnost začne znovu.
+ */
+static uint8_t s_gdgsync_state;
+static uint8_t s_gdgsync_value;
+
+static void unimgr_gdgsync ( uint8_t high ) {
+    switch ( s_gdgsync_state ) {
+        case 0:
+            s_gdgsync_state = ( 0x55 == high ) ? 1 : 0;
+            break;
+        case 1:
+            s_gdgsync_state = ( 0xaa == high ) ? 2 : 0;
+            break;
+        case 2:
+            s_gdgsync_state = 0;
+            if ( ( high < 50 ) || ( 0xff == high ) ) {
+                s_gdgsync_value = high;
+                s_gdgsync_state = 3;
+            };
+            break;
+        default:
+            s_gdgsync_state = 0;
+            if ( ( high == ( s_gdgsync_value ^ 0xff ) ) && ( 0xff == s_gdgsync_value ) ) {
+                printf ( "INFO: Unicard GDGSYNC - computer reset\n" );
+                mzarch_main_hw_reset_request ( );
+            };
+    };
+}
+
+
+void unimgr_write_byte ( en_UNIMGR_ADDR addr, uint8_t data, uint8_t bus_high ) {
 
     /* po kazdem zapisu na kterykoliv unimgr port provedeme reset sts ukazatele */
     g_unimgr.sts_pos = 0;
+
+    if ( ( addr != UNIMGR_ADDR_DATA ) && ( data == cmdGDGSYNC ) && ( unicard_get_fw ( ) == UNICARD_FW_UC3 ) ) {
+        unimgr_gdgsync ( bus_high );
+        return;
+    };
 
     /* RKEY: jen ohlásí čtení klávesy, stav repozitáře se nemění; jiný zápis ohlášení zruší */
     if ( ( addr != UNIMGR_ADDR_DATA ) && ( data == cmdRKEY ) && unicard_get_api_rev2 ( ) ) {
@@ -2097,6 +2174,7 @@ static uint8_t unimgr_read_DATA ( void ) {
                 break;
 
             case cmdREVD:
+            case cmdINTCALLER:
             case cmdRTCGETD:
             case cmdRTCGETT:
             case cmdTELL:

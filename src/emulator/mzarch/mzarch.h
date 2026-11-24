@@ -166,6 +166,17 @@ extern "C"
      * @post Stav jako po mzarch_main_reset(); stav pauzy se nemění.
      */
     extern void mzarch_main_reset_now(void);
+
+    /**
+     * @brief Reset stroje ze strany hardware (např. příkaz BOOT karty Unicard).
+     *
+     * Jako tlačítko Reset proběhne na hranici instrukce v hlavní smyčce,
+     * ale mimo záznam vstupů (replay_divert_reset_request()): při přehrání
+     * ho vyvolá znovu tentýž přístup na port, záznam ho tedy nesmí uložit.
+     *
+     * @pre Emulátorové vlákno (zápis na port).
+     */
+    extern void mzarch_main_hw_reset_request(void);
     extern void mzarch_main_insideop_iorq(void);
     extern void mzarch_main_insideop_mreq(void);
     extern void mzarch_main_insideop_mreq_e00x(void);

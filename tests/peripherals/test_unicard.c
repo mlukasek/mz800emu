@@ -24,6 +24,7 @@
 #include "hw-generic/unicard/unimgr.h"
 #include "baseui/baseui_tools.h"
 #include "emulator/mzarch/mzarch_platform.h"
+#include "mzarch/mzarch.h"
 
 /* Porty unicard (interní mapování unimgr_write_byte/unimgr_read_byte). */
 #define UNICARD_PORT_CMD   0x50
@@ -2948,6 +2949,123 @@ void test_unicard_uc3_version(void)
 }
 
 
+/* Žádost o reset počítače (hlavní smyčka ji v testu nevyřídí): přečte a smaže. */
+static bool uc_take_reset_request(void)
+{
+    bool r = g_mzarch_main.reset_request;
+    g_mzarch_main.reset_request = false;
+    return r;
+}
+
+
+/* GDGSYNC: příkaz 0Bh s bajtem v horní polovině adresy (OUT (C),A, v B). */
+static void uc_gdgsync(uint8_t high)
+{
+    unicard_write_byte((uint16_t)((high << 8) | UNICARD_PORT_CMD), cmdGDGSYNC);
+}
+
+
+/* uc3 BOOT 07h: reset počítače (žádost pro hlavní smyčku), stav OK. */
+void test_unicard_uc3_boot(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_take_reset_request();
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdBOOT);
+    TEST_ASSERT_TRUE_MESSAGE(uc_take_reset_request(), "BOOT = reset počítače");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "BOOT = OK");
+}
+
+
+/* uc3 GDGSYNC 0Bh: 55h AAh FFh 00h v horním bajtu adresy resetuje počítač,
+ * jiná hodnota (obraz VGA) ne; stav repozitáře se nemění (jako STSR). */
+void test_unicard_uc3_gdgsync(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_take_reset_request();
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(0x7f);                          /* neznámý příkaz: ERROR */
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "předtím ERROR");
+    uc_gdgsync(0x55);
+    uc_gdgsync(0xaa);
+    uc_gdgsync(0x10);                           /* obraz VGA: emulace ho nemá */
+    uc_gdgsync(0xef);
+    TEST_ASSERT_FALSE_MESSAGE(uc_take_reset_request(), "hodnota 10h počítač neresetuje");
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "GDGSYNC stav nemění");
+
+    uc_gdgsync(0x55);
+    uc_gdgsync(0x00);                           /* chybná posloupnost začne znovu */
+    uc_gdgsync(0xff);
+    uc_gdgsync(0x00);
+    TEST_ASSERT_FALSE_MESSAGE(uc_take_reset_request(), "chybná posloupnost");
+
+    uc_gdgsync(0x55);
+    uc_gdgsync(0xaa);
+    uc_gdgsync(0xff);
+    uc_gdgsync(0x00);
+    TEST_ASSERT_TRUE_MESSAGE(uc_take_reset_request(), "55h AAh FFh 00h = reset počítače");
+    TEST_ASSERT_TRUE_MESSAGE(uc_master_status() & UNICARD_STS_ERROR, "stav pořád z neznámého příkazu");
+}
+
+
+/* uc3 INTCALLER 11h (1 B, emulace přerušení karty nemá: 0), USHELLON/OFF
+ * a USARTBPS (4 B) hlásí OK. */
+void test_unicard_uc3_intcaller_usart(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINTCALLER);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_DOUTRQ, uc_master_status() & (UNICARD_STS_DOUTRQ | UNICARD_STS_ERROR),
+                                    "INTCALLER = výstup bez chyby");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, uc_recv_data(), "INTCALLER = 0");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_DOUTRQ, "INTCALLER má 1 B");
+
+    uc_send_cmd(cmdUSHELLON);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "USHELLON = OK");
+    uc_send_cmd(cmdUSHELLOFF);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "USHELLOFF = OK");
+
+    uc_send_cmd(cmdUSARTBPS);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "USARTBPS čeká parametry");
+    uc_send_data(0x00);
+    uc_send_data(0xc2);
+    uc_send_data(0x01);
+    uc_send_data(0x00);                         /* 115200 */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_ERROR, "USARTBPS = OK");
+    uc_send_cmd(cmdGETCWD);                     /* po 4 B je příkaz hotový */
+    char cwd[8];
+    size_t n = 0;
+    while ((n < sizeof(cwd) - 1) && (uc_master_status() & UNICARD_STS_DOUTRQ)) cwd[n++] = (char)uc_recv_data();
+    cwd[n] = 0;
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(cwd, "/\r"), "další příkaz po USARTBPS (fw 0.26 hlásí 0:/)");
+}
+
+
+/* uc1 (rev.60) příkazy uc3 nezná: BOOT = ERROR a počítač se neresetuje. Jen MZ-800. */
+void test_unicard_uc1_no_boot(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+    if (g_mzarch_platform_numeric != 800) return;
+
+    uc_take_reset_request();
+    unicard_set_fw(UNICARD_FW_UC1);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdBOOT);
+    uint8_t sts = uc_master_status();
+    uc_gdgsync(0x55);
+    uc_gdgsync(0xaa);
+    uc_gdgsync(0xff);
+    uc_gdgsync(0x00);
+    bool reset = uc_take_reset_request();
+    unicard_set_fw(UNICARD_FW_UC3);
+    TEST_ASSERT_TRUE_MESSAGE(sts & UNICARD_STS_ERROR, "uc1: BOOT = ERROR");
+    TEST_ASSERT_FALSE_MESSAGE(reset, "uc1: žádný reset");
+}
+
+
 /* ================================================================
  * UC API rev 2: chybové kódy ve stavu bajt 2 (podle MZPico)
  * ================================================================ */
@@ -3976,6 +4094,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_info_rev2);
     RUN_TEST(test_unicard_info_rev2_needs_uc3);
     RUN_TEST(test_unicard_uc3_version);
+    RUN_TEST(test_unicard_uc3_boot);
+    RUN_TEST(test_unicard_uc3_gdgsync);
+    RUN_TEST(test_unicard_uc3_intcaller_usart);
+    RUN_TEST(test_unicard_uc1_no_boot);
 
     /* UC API rev 2: chybové kódy. */
     RUN_TEST(test_unicard_err_codes_rev2);
