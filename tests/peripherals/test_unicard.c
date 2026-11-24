@@ -884,6 +884,36 @@ void test_unicard_rev2_data_read_wait(void)
 }
 
 
+/* Složka cloudu z INI cloud_dir, když proměnná prostředí chybí; proměnná má přednost. */
+void test_unicard_cloud_dir_ini_rev2(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    uint8_t info[16];
+    g_unsetenv("MZ800EMU_UNICARD_CLOUD");
+    unicard_set_api_rev2(1);
+    unicard_set_cloud_dir(s_test_sd_root);          /* existující složka */
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, info[3] & 0x01, "cloud_dir: cloud dostupný");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(s_test_sd_root, unicard_cloud_root(), "cesta z INI");
+
+    char *missing = g_build_filename(s_test_sd_root, "missing", NULL);
+    g_setenv("MZ800EMU_UNICARD_CLOUD", missing, TRUE);
+    uc_send_cmd(cmdINFO);
+    for (int i = 0; i < 16; i++) info[i] = uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, info[3] & 0x01, "proměnná prostředí má přednost");
+    g_unsetenv("MZ800EMU_UNICARD_CLOUD");
+    g_free(missing);
+
+    unicard_set_cloud_dir("");
+    TEST_ASSERT_NULL_MESSAGE(unicard_cloud_root(), "prázdné = bez cloudu");
+    unicard_set_rkey_file("");
+    TEST_ASSERT_NULL_MESSAGE(unicard_rkey_file(), "prázdné = bez kláves");
+}
+
+
 /* Read full file content from host FS pro verifikaci. */
 static size_t read_file_content(const char *rel_path, uint8_t *buf, size_t cap)
 {
@@ -4240,6 +4270,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_uc3_long_name_invalid);
     RUN_TEST(test_unicard_dns_resolving);
     RUN_TEST(test_unicard_rev2_data_read_wait);
+    RUN_TEST(test_unicard_cloud_dir_ini_rev2);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);
     RUN_TEST(test_unicard_cmdSTAT_dir);

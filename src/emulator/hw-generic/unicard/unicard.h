@@ -860,15 +860,33 @@ extern "C" {
     /**
      * @brief Svazek cloud: (UC API rev 2, jako MZPico a firmware mk3b 0.31).
      *
-     * Emulátor místo api.mzpico.com čte složku hostitele z proměnné prostředí
-     * MZ800EMU_UNICARD_CLOUD (bez ní cloud není). "cloud:/a/b" = <složka>/a/b.
+     * Emulátor místo api.mzpico.com čte složku hostitele: proměnná prostředí
+     * MZ800EMU_UNICARD_CLOUD (přednost), jinak INI [UNICARD] cloud_dir (relativně
+     * od složky konfigurace). Bez nich karta server nemá (jako bez sítě).
+     * "cloud:/a/b" = <složka>/a/b.
      *
      * @return složka cloudu, nebo NULL
      */
     extern const char* unicard_cloud_root ( void );
 
-    /** @brief Je cloud dostupný (složka MZ800EMU_UNICARD_CLOUD existuje)? Chybí-li, emulace hlásí, že není síť. */
+    /** @brief Je cloud dostupný (složka cloudu nastavená a existuje)? Jinak emulace hlásí, že není síť. */
     extern int unicard_cloud_online ( void );
+
+    /**
+     * @brief Soubor vzdálených kláves (RKEY): proměnná MZ800EMU_UNICARD_RKEY, jinak INI rkey_file.
+     *
+     * Na kartě klávesy posílá shell (KEY přes síť); emulace je čte ze souboru
+     * hostitele (kódy kláves manažeru) a soubor po přečtení smaže.
+     *
+     * @return cesta, nebo NULL
+     */
+    extern const char* unicard_rkey_file ( void );
+
+    /** @brief Nastaví INI cloud_dir (prázdné nebo NULL = bez cloudu). */
+    extern void unicard_set_cloud_dir ( const char *path );
+
+    /** @brief Nastaví INI rkey_file (prázdné nebo NULL = bez vzdálených kláves). */
+    extern void unicard_set_rkey_file ( const char *path );
 
     /** @brief Začíná cesta "cloud:"? */
     extern int unicard_cloud_is_path ( const char *path );

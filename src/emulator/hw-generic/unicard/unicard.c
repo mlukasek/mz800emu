@@ -70,6 +70,8 @@ st_UNICARD g_unicard;
 
 static CFGELM *g_elm_connected;
 static CFGELM *g_elm_sd_root;
+static CFGELM *g_elm_cloud_dir;
+static CFGELM *g_elm_rkey_file;
 static CFGELM *g_elm_readonly;
 static CFGELM *g_elm_fw_version;
 static CFGELM *g_elm_runtime_check_on_connect;
@@ -1102,6 +1104,11 @@ void unicard_init ( void ) {
     g_elm_connected = cfgmodule_register_new_element ( cmod, "connected", CFGENTYPE_BOOL, default_conn );
     cfgelement_set_handlers ( g_elm_connected, (void*) NULL, (void*) &g_unicard.connected );
     g_elm_sd_root = cfgmodule_register_new_element ( cmod, "sd_root", CFGENTYPE_TEXT, UNICARD_DEFAULT_SD_ROOT );
+    /* uc3 v0.37: složka hostitele místo serveru cloudu (svazek cloud:) a soubor
+     * vzdálených kláves (RKEY); prázdné = bez nich. Relativní cesta od složky
+     * konfigurace jako sd_root. Proměnné prostředí mají přednost. */
+    g_elm_cloud_dir = cfgmodule_register_new_element ( cmod, "cloud_dir", CFGENTYPE_TEXT, "" );
+    g_elm_rkey_file = cfgmodule_register_new_element ( cmod, "rkey_file", CFGENTYPE_TEXT, "" );
 
     /* Default R/W (0) - existující uživatelé bez záznamu si nepoznají
      * žádnou změnu chování. Bind oba směry pro persistenci přes
@@ -3164,9 +3171,42 @@ static FRESULT unicard_copy_begin ( char *src, char *dst ) {
 
 /* --- Svazek cloud: (UC API rev 2), složka hostitele místo api.mzpico.com --- */
 
+/* Cesta z proměnné prostředí @p env (přednost), jinak z prvku INI (relativní od složky
+ * konfigurace, výsledek si drží @p cache); NULL = nenastavená. */
+static const char* unicard_env_or_cfg_path ( const char *env, CFGELM *elm, char **cache_raw, char **cache ) {
+    const char *r = g_getenv ( env );
+    if ( r && r[0] ) return r;
+    const char *v = elm ? cfgelement_get_text_value ( elm ) : NULL;
+    if ( !v || ( v[0] == 0x00 ) ) return NULL;
+    if ( !*cache_raw || strcmp ( *cache_raw, v ) ) {
+        g_free ( *cache_raw );
+        g_free ( *cache );
+        *cache_raw = g_strdup ( v );
+        *cache = sdlapp_paths_resolve_cfg ( g_sdlapp->paths, v );
+    };
+    return *cache;
+}
+
+
 const char* unicard_cloud_root ( void ) {
-    const char *r = g_getenv ( "MZ800EMU_UNICARD_CLOUD" );
-    return ( r && r[0] ) ? r : NULL;
+    static char *raw = NULL, *res = NULL;
+    return unicard_env_or_cfg_path ( "MZ800EMU_UNICARD_CLOUD", g_elm_cloud_dir, &raw, &res );
+}
+
+
+const char* unicard_rkey_file ( void ) {
+    static char *raw = NULL, *res = NULL;
+    return unicard_env_or_cfg_path ( "MZ800EMU_UNICARD_RKEY", g_elm_rkey_file, &raw, &res );
+}
+
+
+void unicard_set_cloud_dir ( const char *path ) {
+    cfgelement_set_text_value ( g_elm_cloud_dir, path ? path : "" );
+}
+
+
+void unicard_set_rkey_file ( const char *path ) {
+    cfgelement_set_text_value ( g_elm_rkey_file, path ? path : "" );
 }
 
 

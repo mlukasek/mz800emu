@@ -814,10 +814,10 @@ void unimgr_rkey_clear ( void ) {
 }
 
 
-/* fronta je prázdná: doplnit ze souboru hostitele (MZ800EMU_UNICARD_RKEY) */
+/* fronta je prázdná: doplnit ze souboru hostitele (unicard_rkey_file) */
 static void unimgr_rkey_fill ( void ) {
-    const char *path = getenv ( "MZ800EMU_UNICARD_RKEY" );
-    if ( !path || !path[0] ) return;
+    const char *path = unicard_rkey_file ( );
+    if ( !path ) return;
     FILE *f = fopen ( path, "rb" );
     if ( !f ) return;
     int c;

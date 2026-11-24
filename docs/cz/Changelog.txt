@@ -1,3 +1,5 @@
+	- Unicard uc3 v0.37 (UC API rev 2) - nové volby konfigurace cloud_dir a rkey_file (sekce [UNICARD] v ini, relativní cesta od složky konfigurace jako sd_root): složka počítače, ze které emulace obsluhuje svazek cloud: místo serveru api.mzpico.com, a soubor vzdálených kláves (RKEY 9Ch, kódy kláves; emulace ho po přečtení smaže). Prázdné = karta bez serveru cloudu (jako bez sítě) a bez vzdálených kláves. Proměnné prostředí MZ800EMU_UNICARD_CLOUD a MZ800EMU_UNICARD_RKEY mají dál přednost (testy, automatizace).
+
 	- Unicard uc3 v0.37 (UC API rev 2) - čtení portu dat 51h prodlouží cyklus Z80 o 4 takty WAIT, jak je karta drží, než data připraví (změřeno na Unicard mk3b: INIR 27,2 taktu na bajt proti 23,2 v emulátoru). Čtení stavu (50h) a zápisy změřené nejsou a zůstávají bez čekání. Přístup debuggeru (MCP io_read, port v breakpointu) čekání nepřidá.
 
 	- Unicard - DNSRES hlásí jako firmware (lwIP) stav 1 (RESOLVING): číselná adresa je přeložená hned, u jména karta čeká na server, takže první DNSRES po DNSREQ hlásí RESOLVING a teprve další výsledek. Emulace se ptá resolveru hostitele hned jako dřív, klient ale musí počítat s čekáním jako na kartě.
