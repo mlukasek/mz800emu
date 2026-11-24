@@ -752,6 +752,36 @@ static void uc_close(void)
 }
 
 
+/* Stav bit 5 (EOF) jako firmware: hned jak pozice dojde na velikost
+ * souboru, ne až po čtení za konec; prázdný soubor hned po OPEN. */
+void test_unicard_status_eof_at_size(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("eof3.bin", 3);
+    create_test_file("eof0.bin", 0);
+    uc_send_cmd(cmdRESET);
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);                         /* FA_READ */
+    uc_send_str("eof3.bin");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_EOF, "po OPEN bez EOF");
+    uc_recv_data();
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_EOF, "po 2 z 3 B bez EOF");
+    uc_recv_data();
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_EOF, uc_master_status() & UNICARD_STS_EOF, "po 3 B EOF");
+    uc_seek(0, 1);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, uc_master_status() & UNICARD_STS_EOF, "SEEK zpět: bez EOF");
+    uc_close();
+
+    uc_send_cmd(cmdOPEN);
+    uc_send_data(0x01);
+    uc_send_str("eof0.bin");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(UNICARD_STS_EOF, uc_master_status() & UNICARD_STS_EOF, "prázdný soubor: EOF hned");
+    uc_close();
+}
+
+
 /* Read full file content from host FS pro verifikaci. */
 static size_t read_file_content(const char *rel_path, uint8_t *buf, size_t cap)
 {
@@ -3997,6 +4027,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unicard_parser_BS_via_cmdOPEN);
     RUN_TEST(test_unicard_parser_BS_open_existing);
     RUN_TEST(test_unicard_cmdSIZE);
+    RUN_TEST(test_unicard_status_eof_at_size);
     RUN_TEST(test_unicard_cmdTELL);
     RUN_TEST(test_unicard_cmdSTAT_file);
     RUN_TEST(test_unicard_cmdSTAT_dir);

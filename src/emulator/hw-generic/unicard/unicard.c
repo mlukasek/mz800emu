@@ -2177,8 +2177,13 @@ int unicard_file_is_open ( st_UNICARD_FILE *file ) {
 
 
 int unicard_file_is_eof ( st_UNICARD_FILE *file ) {
+    /* Jako firmware (stav bit 5: velikost <= pozice): konec hned, jak pozice
+     * dojde na velikost, ne až po čtení za konec jako feof(); prázdný soubor
+     * hned po otevření. */
     if ( file->fh == NULL ) return EXIT_FAILURE;
-    if ( feof ( file->fh ) == 0 ) return EXIT_FAILURE;
+    long pos = ftell ( file->fh );
+    if ( pos < 0 ) return EXIT_FAILURE;
+    if ( (long) unicard_file_size ( file ) > pos ) return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }
 
