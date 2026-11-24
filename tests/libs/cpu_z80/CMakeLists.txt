@@ -79,12 +79,33 @@ mz_add_test(cpu_z80_push_order
     LABELS   "standalone;libs"
 )
 
+# Pořadí čtení 16bitové hodnoty z paměti: LD rr,(nn), POP, RET, RETI
+# a EX (SP),HL čtou nižší bajt dřív (Zilog UM0080). Na pořadí záleží
+# u čekacích taktů VRAM a u mapovaných portů se stavem.
+mz_add_test(cpu_z80_read16_order
+    TYPE     STANDALONE
+    SOURCES  test_read16_order.c
+    LIBS     mzlib_cpu_z80
+    LABELS   "standalone;libs"
+)
+
 # Příznaky v opakující iteraci LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR
 # (YF/XF z adresy instrukce, u INxR/OTxR i PF/HF) podle měření BLKFLAGS
 # na MZ-800 a na reálných čipech Z80. Viz emu-experiments/z80-block-flags/.
 mz_add_test(cpu_z80_block_repeat
     TYPE     STANDALONE
     SOURCES  test_block_repeat.c
+    LIBS     mzlib_cpu_z80
+    LABELS   "standalone;libs"
+)
+
+# Interní registr Q: YF/XF po SCF a CCF = ((Q xor F) or A) and 28h, Q = F po
+# instrukci se zápisem příznaků, jinak 0. Krokování, dávka i hranice volání
+# musí dát stejný výsledek (program syscheck na MZ-800: 64 shod ze 64).
+# Viz emu-experiments/q-register/README.md.
+mz_add_test(cpu_z80_q_register
+    TYPE     STANDALONE
+    SOURCES  test_q_register.c
     LIBS     mzlib_cpu_z80
     LABELS   "standalone;libs"
 )

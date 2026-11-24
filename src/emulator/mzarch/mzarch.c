@@ -50,6 +50,8 @@
 #endif
 
 #include "hw-generic/unicard/unicard.h"
+/* MZARCH_INTERRUPT_SETUP_TICKS potřebuje jádro i v buildu bez debuggeru. */
+#include "mzarch/interrupt.h"
 
 #ifdef MZ800EMU_CFG_DEBUGGER_ENABLED
 #include "debugger/debugger.h"
@@ -68,7 +70,6 @@
 #include "debugger/freeze/freeze.h"
 #include "debugger/run_control/run_control.h"
 #include "debugger/run_control/run_log.h"
-#include "mzarch/interrupt.h"
 #ifdef MZ800EMU_CFG_MCP_SERVER_ENABLED
 #include <json-glib/json-glib.h>
 #include "mcp/event_bus.h"
@@ -130,6 +131,8 @@ static void mzarch_main_reset(void);
 
 static inline void mzarch_main_event_callback_20ms(unsigned event_ticks)
 {
+    /* echo kazety: hrany signálu pásky za tento snímek ještě do jeho zvukového logu */
+    cmt_on_frame_audio_event();
     audiolog_finish_20ms_frame(gdg_compute_total_ticks(event_ticks));
 
     if (!EMULATOR_TEST_PAUSED)
@@ -632,6 +635,19 @@ static inline void mzarch_sync_ctc0_and_cmt(unsigned instruction_ticks)
  */
 #define VRAMWAIT_WRFF_MAX_AHEAD ( 2u * VRAMWAIT_LINE_CLK0 )
 
+/**
+ * @brief Nejmenší odstup konce M-cyklu zápisu na port GDG od uvolnění WRITE FF (CLK0).
+ *
+ * Zápis na porty 0CCh až 0CFh čeká, dokud jeho M-cyklus neskončí aspoň
+ * tolik CLK0 po uvolnění WRITE FF předchozího zápisu do VRAM. Hodnota je
+ * určena měřením na MZ-800 (emu-experiments gdg-meas, čtvrté měření): po
+ * zápisu ve viditelné části režimu MZ-700 (uvolnění 969 CLK0 od hrany /HSYN)
+ * končí /IORQ čekajícího OUT 976 až 980 px, M-cyklus tedy 979 až 983 CLK0
+ * v mřížce emulátoru. Odpovídá vzorkování /WAIT procesorem 1,5 T před
+ * koncem M-cyklu.
+ */
+#define GDG_PORT_WAIT_RELEASE_CLK0 10u
+
 #if VIDEO_SCREEN_WIDTH != 1136
 #error "Model WAIT (mz800_vramwait.h) předpokládá řádek PAL 1136 CLK0"
 #endif
@@ -713,17 +729,57 @@ static inline void mzarch_main_insideop(const en_INSIDEOP insideop)
         en_VRAMWAIT_GRID grid = GDG_MZ800_DMD_TEST_MZ700 ? VRAMWAIT_GRID_MZ700 : VRAMWAIT_GRID_MZ800;
         unsigned wait_tw;
 
+        /* Řádek modelu začíná sestupnou hranou nHSYN předchozího řádku
+         * emulátoru. Ta leží GDG_VRAMWAIT_TICKS_TO_LINE_OFFSET tiků před
+         * začátkem aktuálního řádku, takže na ose modelu (čas GDG plus týž
+         * posun) má začátek řádku modelu hodnotu absolutního času začátku
+         * aktuálního řádku emulátoru. Délka je délka aktuálního řádku
+         * (kratší při CKSW = 1; do načtení bitu v HBLN_START nezkrácená,
+         * což stačí, protože na délce závisí jen sloty za tímto bodem).
+         * Přístup za hranou nHSYN aktuálního řádku model sám přiřadí
+         * dalšímu řádku. */
+        st_VRAMWAIT_LINE ln;
+        ln.start = gdg_compute_total_ticks( gdg_get_row_start_ticks( ) );
+        ln.len = VIDEO_SCREEN_WIDTH - g_gdg.row_shrink;
+
         if ( g_gdg.vram_wrff_release > t1r + VRAMWAIT_WRFF_MAX_AHEAD ) {
             g_gdg.vram_wrff_release = 0;
         }
 
         if ( insideop == INSIDEOP_MREQ_MZ800_VRAMCTRL_WRITE ) {
             int two_slots = ( grid == VRAMWAIT_GRID_MZ800 ) && !GDG_MZ800_DMD_TEST_SCRW640;
-            wait_tw = vramwait_write( &g_gdg.vram_wrff_release, t1r, grid, two_slots );
+            wait_tw = vramwait_write_ln( &g_gdg.vram_wrff_release, t1r, grid, two_slots, &ln );
         } else {
-            wait_tw = vramwait_read( g_gdg.vram_wrff_release, t1r, grid );
+            wait_tw = vramwait_read_ln( g_gdg.vram_wrff_release, t1r, grid, &ln );
         }
 
+        if ( wait_tw ) {
+            z80_add_wait_states( g_mzarch_main.cpu, (int) wait_tw );
+            /* trace-suite: saturujici akumulace WAIT T-states pro cputrack. */
+            uint64_t wsum = (uint64_t) g_mzarch_main.instruction_wait_tstates + wait_tw;
+            g_mzarch_main.instruction_wait_tstates = ( wsum > 0xFFFFFFFFu ) ? 0xFFFFFFFFu : (uint32_t) wsum;
+        }
+        ticks_to_sync = wait_tw * GDGCLK2CPU_DIVIDER;
+
+        instruction_ticks = g_mzarch_main.instruction_insideop_sync_ticks + ticks_to_sync;
+        break;
+    }
+#endif /* MZARCH == 800 */
+
+#if MZARCH == 800
+    case INSIDEOP_IORQ_GDG_WRITE: {
+        /* Čas GDG je konec M-cyklu zápisu bez čekání (předtím proběhlo
+         * mzarch_main_insideop_iorq()). */
+        uint64_t end = gdg_get_vramwait_ticks( );
+        unsigned wait_tw = 0;
+
+        if ( g_gdg.vram_wrff_release > end + VRAMWAIT_WRFF_MAX_AHEAD ) {
+            g_gdg.vram_wrff_release = 0;
+        }
+        if ( g_gdg.vram_wrff_release + GDG_PORT_WAIT_RELEASE_CLK0 > end ) {
+            wait_tw = (unsigned) ( ( g_gdg.vram_wrff_release + GDG_PORT_WAIT_RELEASE_CLK0 - end
+                                     + GDGCLK2CPU_DIVIDER - 1u ) / GDGCLK2CPU_DIVIDER );
+        }
         if ( wait_tw ) {
             z80_add_wait_states( g_mzarch_main.cpu, (int) wait_tw );
             /* trace-suite: saturujici akumulace WAIT T-states pro cputrack. */
@@ -740,8 +796,11 @@ static inline void mzarch_main_insideop(const en_INSIDEOP insideop)
 #if MZARCH != 700
     case INSIDEOP_IORQ_PSG_WRITE:
         tstates_to_psg_sync = 16 - (gdg_get_total_ticks() / GDGCLK2CPU_DIVIDER) % 16;
-        // tohle je muj odhad, kdyz jsem to testoval s analyzerem, tak 1 cpu takt nestacil, zatimco 5 uz bylo OK
-        if (tstates_to_psg_sync < 4)
+        /* PSG uvolňuje WAIT v rastru 16 T. Bod rastru vzdálený 1 nebo 2 takty
+         * čip nestihne a čeká se o 16 T déle; 3 takty už stačí. Změřeno na
+         * MZ-800 analyzátorem 2026-11-14 (16 fází po 128 zápisech; čekání
+         * 19 až 34 T), mz800-knowledge hw-measurement/vysledky.md. */
+        if (tstates_to_psg_sync < 3)
         {
             tstates_to_psg_sync += 16;
         };
@@ -832,6 +891,27 @@ void mzarch_main_insideop_iorq_psg_write(void)
     mzarch_main_insideop(INSIDEOP_IORQ_PSG_WRITE);
 }
 
+void mzarch_main_insideop_iorq_gdg_write(void)
+{
+#if MZARCH == 800
+    /* Zápis debuggeru mezi instrukcemi (op_tstate vynulovaný v
+     * mzarch_main_dbgapi_dispatch_one()) čekací takty nedostane. Bez
+     * rozpracovaného zápisu do VRAM není co počítat. */
+    if ( ( g_gdg.vram_wrff_release == 0 ) || ( g_mzarch_main.cpu->op_tstate == 0 ) ) return;
+    mzarch_main_insideop(INSIDEOP_IORQ_GDG_WRITE);
+#endif
+}
+
+void mzarch_main_requeue_event(void)
+{
+    /* Vynucenou událost (pauza, krok, přerušení) nesmí přeplánování zrušit;
+     * hlavní smyčka ji po vyřízení sama nahradí nejbližší čekající. */
+    if (g_mzarch_main.event.event_name < MZEVENT_BREAK)
+    {
+        mzarch_main_queue_next_event();
+    };
+}
+
 void mzarch_main_report_screen_done_underflow(unsigned ticks)
 {
     /* Jen EMU vlákno - čítač nemusí být atomický. Omezení výpisu chrání
@@ -870,7 +950,9 @@ void mzarch_main_report_screen_done_underflow(unsigned ticks)
  * předá (z80_int) jen při povolených přerušeních, takže se úrovňový signál
  * nezapamatuje; čekající IRQ z injectu (vlastní vektor) se nepřepisuje.
  * Když INT čeká a přerušení jsou zakázaná, kontrola se zopakuje po další
- * instrukci (MZEVENT_BREAK_MZARCH_INTERRUPT).
+ * instrukci (MZEVENT_BREAK_MZARCH_INTERRUPT). Stejně se odloží žádost linky
+ * INT, která přišla méně než MZARCH_INTERRUPT_SETUP_TICKS před koncem
+ * instrukce (změřeno na MZ-800, viz interrupt.h).
  *
  * Bez žádosti jedno čtení masky a dvou příznaků jádra (per-event cesta,
  * ne instrukční smyčka).
@@ -885,6 +967,19 @@ static inline void mzarch_main_process_interrupt(void)
     bool int_enabled = cpu->iff1 && !cpu->ei_delay;
     /* NMI má v jádře přednost; přijetí níže je tedy NMI. */
     bool is_nmi = cpu->nmi_pending;
+
+    /* Žádost na lince INT, která přišla těsně před koncem instrukce, procesor
+     * na tomto konci ještě nevidí (MZARCH_INTERRUPT_SETUP_TICKS); zkusíme to
+     * po další instrukci (v HALT po dalších 4 T). NMI a IRQ z injectu se to
+     * netýká. */
+    if (!is_nmi && int_enabled && !cpu->int_pending && g_mzarch_main.interrupt)
+    {
+        if ((int64_t)(gdg_get_total_ticks() - g_mzarch_main.interrupt_rise_total_ticks) < MZARCH_INTERRUPT_SETUP_TICKS)
+        {
+            MZ800_MAIN_SET_EVENT(MZEVENT_BREAK_MZARCH_INTERRUPT, 0);
+            return;
+        };
+    };
 
     if (is_nmi || int_enabled)
     {
@@ -1450,6 +1545,7 @@ static void mzarch_main_reset(void)
 
     // TODO: tohle se nedeje
     g_mzarch_main.interrupt = 0;
+    g_mzarch_main.interrupt_rise_total_ticks = 0;
 
     g_mzarch_main.instruction_addr = 0x0000;
 
@@ -1610,11 +1706,11 @@ char *mzarch_cli_option_value_utf8_nth(const char *name, int n)
     return g_strdup(raw);
 }
 
-void mzarch_main_reset_and_run_mzf(const char *filename)
+void mzarch_main_reset_and_run_mzf(const char *filename, const st_BOOTDEV_CHOICE *device)
 {
     /* Stejná sekvence jako start s CLI --run-mzf v mzarch_main(). */
     mzarch_main_reset();
-    mzarch_bootstrap_run_mzf(filename);
+    mzarch_bootstrap_run_mzf(filename, device);
 }
 
 void mzarch_main_reset_now(void)
@@ -1632,7 +1728,19 @@ void mzarch_main(void)
         if (mzf_path)
         {
             g_print("CLI --run-mzf: %s\n", mzf_path);
-            mzarch_bootstrap_run_mzf(mzf_path);
+            /* --run-mzf-device: kód zařízení v BC jen pro tento start (INI
+             * se nemění); hodnotu už ověřil main() přes bootdev_parse_ex().
+             * Bez volby nastavení [CMT] run_mzf_device, přečtené jednou, aby
+             * zápis pro result.json automatizace odpovídal BC. */
+            const char *dev_opt = sdlapp_option_value("--run-mzf-device");
+            char dev_text[BOOTDEV_TEXT_MAX];
+            if (!dev_opt || !bootdev_normalize(dev_opt, dev_text, sizeof(dev_text)))
+                bootdev_setting_get_text(dev_text, sizeof(dev_text));
+            st_BOOTDEV_CHOICE dev;
+            bool has_dev = bootdev_parse(dev_text, &dev);
+            mzarch_bootstrap_run_mzf(mzf_path, has_dev ? &dev : NULL);
+            automation_note_run_mzf_device(dev_text,
+                                           (uint16_t)z80_get_reg(g_mzarch_main.cpu, Z80_REG_BC));
         };
     }
 

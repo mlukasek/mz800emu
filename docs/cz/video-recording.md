@@ -22,7 +22,7 @@ platformy:
 | MZ-700 NTSC | 704x232 | 704x464 | 640x200 | 60 | jen CTC (oba kanály stejné) |
 | MZ-1500 | 704x232 | 704x464 | 640x200 | 60 | stereo: vlevo CTC a první PSG, vpravo CTC a druhý PSG |
 
-Na MZ-800 je stereo nahrávka, když je zapnutý druhý PSG (v menu pod názvem "PSG1": **Devices -> HW
+Na MZ-800 je stereo nahrávka, když je zapnutý druhý PSG (v menu pod názvem "PSG1": **HW & Devices -> HW
 Compatibility Experiments -> Allow PSG1 (stereo)**); bez něj jsou oba kanály
 stejné. Nahrávka obsahuje stejné rozložení zvuku vlevo a vpravo, jaké emulátor
 přehrává.
@@ -123,9 +123,10 @@ odpovídajícího množství vzorků na snímek. Výsledkem je dokonalý průcho
 emulátor skutečně běžel.
 
 Zvuk nahrávky prochází stejnými filtry jako zvuk, který emulátor přehrává
-(zjemnění ostrých hran a postupné ztlumení úrovně, která se déle než cca 45 ms
-nemění), takže zní stejně jako výstup emulátoru. Ticho je v nahrávce nulová
-úroveň.
+(výstupní propust podle volby Hardware output filter v okně Interface ->
+Audio..., střídavá vazba reproduktoru a celého výstupu, kterou stálá úroveň
+do několika sekund dozní), takže zní stejně jako výstup emulátoru.
+Ticho je v nahrávce nulová úroveň.
 
 - **Pauza emulace** (`Alt + P`) pozastaví i video. Během pauzy žádné snímky nevznikají.
 - **Zrychlení a MAX SPEED se ve videu neprojeví.** Při zrychlené emulaci se zapíše

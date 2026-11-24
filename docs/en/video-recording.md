@@ -25,7 +25,7 @@ frame rate per platform:
 | MZ-1500 | 704x232 | 704x464 | 640x200 | 60 | stereo: left CTC and the first PSG, right CTC and the second PSG |
 
 On the MZ-800 the recording is stereo when the second PSG is enabled
-(called "PSG1" in the menu: **Devices -> HW Compatibility Experiments -> Allow PSG1 (stereo)**); without
+(called "PSG1" in the menu: **HW & Devices -> HW Compatibility Experiments -> Allow PSG1 (stereo)**); without
 it both channels are the same. The recording has the same left/right sound
 layout the emulator plays.
 
@@ -125,9 +125,11 @@ matching number of samples per frame. The result is a perfect run of the game re
 emulator really ran.
 
 The recorded sound goes through the same filters as the sound the emulator plays
-(softened sharp edges and a gradual fade of a level that does not change for
-longer than about 45 ms), so it sounds the same as the emulator output. Silence
-is a zero level in the recording.
+(the output filter according to the option Hardware output filter in the window
+Interface -> Audio..., the AC coupling of the speaker and of the whole output,
+which lets a constant level fade out within a few seconds), so it sounds the
+same as the emulator output. Silence is a zero level in the
+recording.
 
 - **Emulation pause** (`Alt + P`) pauses the video as well. No frames are produced
   during the pause.

@@ -71,7 +71,10 @@ of `deadline_frames`, `deadline_ms`, `deadline_ticks`:
 
 - The deadline counts emulated time, not wall clock: the same program
   from the same state stops at the same point (measured: three runs of
-  `deadline_frames=5` took exactly 5 x 354432 GDG ticks each).
+  `deadline_frames=5` took exactly 5 x 354432 GDG ticks each; on the
+  MZ-800 frames are shorter, down to 349440 ticks, while the program
+  keeps the CKSW bit (bit 7 of port 0x07CF) set - the run still stops at the
+  frame boundary).
 - `deadline_frames` stops exactly at the N-th frame boundary.
   `deadline_ms` / `deadline_ticks` stop at the first emulation event
   point at or after the deadline, less than one frame late.
@@ -88,6 +91,24 @@ user started another run in the GUI meanwhile, the call does nothing and
 returns `paused: false`, `skipped: "run_seq_mismatch"`
 (`"not_running"` when nothing runs). Check `started_by` in
 `emu_get_stop_history` to see what the user did.
+
+## The user's overlay menu pauses the emulation
+
+In a windowed emulator the user can open the overlay menu (F10 or Alt +
+left click on the picture). Opening it pauses a running emulation through
+the same request as the GUI pause (Alt+P), so a run you started ends with
+a `paused` event; closing the menu resumes the emulation when the menu
+itself paused it and nobody ran or stepped it meanwhile. While the menu
+is open the user can also let the emulation run and pause it again (the
+Listen switch on the Sound tab, Alt+P); you see that as `resumed` and
+`paused` events.
+
+Known limit: a pause requested while the emulation already stands because
+of the open menu (`emu_pause` on a paused emulator) leaves no trace, so
+closing the menu resumes the emulation although you asked for a pause.
+Do not assume the emulator stays paused across user activity: subscribe
+to `resumed`, or check `emu_get_state` before reading state that must not
+move. There is no MCP tool that opens, closes or reports the overlay menu.
 
 ## Steps
 

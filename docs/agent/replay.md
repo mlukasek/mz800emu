@@ -15,14 +15,41 @@ every input change at a frame boundary + SHA-256 hashes of the state
 every N frames. Playback loads the snapshot, applies the same inputs at
 the same places and compares the hashes; it stops at the first frame
 whose state differs. The emulator core is deterministic from the same
-state with the same inputs (also in a new process and at any speed), so
+state with the same inputs (also in a new process and in MAX SPEED), so
 a replay repeats the run instruction for instruction.
+
+Two limits come from the 20 ms sound timer, which steps the PSG and
+whose period in emulated time follows the custom speed setting:
+
+- Play a recording at the custom speed it was recorded at (MAX SPEED is
+  fine, it does not change the period). At another speed the PSG state
+  differs sooner or later and the playback stops with `state differs at
+  frame N (periph)`; which frame depends on the hash interval.
+- A recording whose start snapshot has no `speed_sync_ticks` key in
+  `hw/gdg.xml` (older versions; the version number in the file does not
+  tell them apart) does not hold the phase of that timer. The phase
+  then stays as the playing process has it, so the process must be
+  prepared the same way as the recording one: the same speed changes
+  for the same number of frames before `emu_replay_play`. This also
+  holds for a recording made at a steady 100 %: a player that ran at
+  another speed earlier has a different phase. Otherwise the playback
+  stops with `state differs at frame N (periph)` at the first hashed
+  frame. The safe way is a fresh process, the same speed preparation
+  without any frame shortened by the CKSW bit (MZ-800), then
+  `emu_replay_play`. If the player did run short frames before, their
+  effect on the phase is taken out when such a file is loaded, but only
+  when the custom speed was set before the first short frame and not
+  changed afterwards; a speed change between or after the short frames
+  leaves a phase that cannot be reconstructed, and the playback may stop
+  at the first hashed frame. Recordings with the key restore the phase
+  from the file.
 
 Recorded: keyboard matrix (GUI keyboard, virtual keyboard, `emu_input_*`
 and `emu_input_send_keys*` together), joysticks (host joystick read once
 per frame, numeric keypad, MCP), resets, autotype, tape control
-(`emu_cmt_play`, `_stop`, `_pause`, `_eject`, `emu_cmt_tape_seek`,
-`emu_cmt_record`, the tape windows), files chosen in the CMT hack dialog,
+(`emu_cmt_play`, `_play_paused`, `_stop`, `_pause`, `_eject`,
+`emu_cmt_tape_seek`, `emu_cmt_tape_step`, `emu_cmt_record`,
+`emu_cmt_new_tape`, the Virtual CMT window), files chosen in the CMT hack dialog,
 debugger writes (`emu_mem_write`, `emu_mem_write_force`, region writes,
 `emu_set_register`, CPU flags, `emu_io_write`, `emu_irq_inject`,
 `emu_nmi_inject`). Stored at the start: contents of all mounted disks
@@ -40,8 +67,42 @@ the playback the media from the INI are mounted again.
 
 Not recorded: Unicard SD directory (warning), Quick Disk in directory
 mode (warning), INI settings. Snapshot load, inserting or ejecting media,
-inserting another tape, tape speed and polarity, the CMT hack switch and
-settings tools are refused while recording.
+inserting another tape, tape speed and polarity (`emu_cmt_set_*`,
+`emu_cmt_tape_set_block_speed`), the CMT hack switch and Direct load
+(`emu_cmt_hack_set`, `emu_cmt_load_directly`), settings tools,
+`emu_cmt_save` and the tape edits
+(`emu_cmt_tape_delete_blocks`, `emu_cmt_tape_move_block`,
+`emu_cmt_tape_import`, `emu_cmt_tape_analyze` with `apply` "add" or
+"replace", `emu_cmt_tape_info` with `set`, `emu_cmt_tape_convert_block`)
+are refused while recording; reading tools (`emu_cmt_tape_analyze`
+without apply, `emu_cmt_tape_info` without `set`, `emu_cmt_tape_check`)
+stay allowed. While
+playing, `emu_cmt_save` and `emu_cmt_record` with a path are refused too
+(`Saving the tape is not allowed while a replay is played`, `Recording to
+a file is not allowed while a replay is played`): they would write your
+files from the playback's tape; the tape edits fail as well (`The tape
+cannot be edited while an input replay is recorded or played`), and so
+do `emu_cmt_hack_set` and `emu_cmt_load_directly` (`The loading mode
+cannot be changed while an input replay is recorded or played`);
+`emu_cmt_record` without a path is allowed
+(the playback is marked deviated, no file is written) and
+`emu_cmt_export_block` and `emu_cmt_export_tape` stay allowed (an
+explicit export of what you see).
+A tape with
+unsaved changes (or without a file) is stored in the replay as an image
+from memory; when it does not fit into the rest of the 64 MB, the start
+of the recording is refused with `Tape with unsaved changes is too large
+for an input recording; save the tape first` (only a hash would be
+stored and the playback could not get the tape). The 0x18 blocks of an
+opened WAV file keep their WAV type (polarity switch) in the playback. Going back to a checkpoint returns the tape exactly: it
+removes the blocks a recording to tape appended after it, restores the
+previous last block byte for byte, the unsaved-changes flag and the file
+name (a recording with a tape file extension saves the tape at STOP), and
+a checkpoint taken without a tape ejects a tape created later by
+recording or `emu_cmt_new_tape` - silently, without dialogs, without
+writing files and without reporting a discarded recording. A checkpoint
+during a recording carries the recording and continues it; it is skipped
+while a long recording to tape runs (edge buffer over 1 MB).
 
 ## Recipe: record a bug, then investigate it with other tools
 
@@ -61,7 +122,9 @@ settings tools are refused while recording.
    Breakpoints that only observe (`log`, `mark`, trace, ramlog, CDL)
    keep the replay valid. A breakpoint `poke` / `set`, `emu_mem_write`
    or Freeze Bytes during playback mark it `deviated` (it goes on, the
-   hashes are no longer checked) - `emu_replay_status` shows it.
+   hashes are no longer checked) - `emu_replay_status` shows it. Tape
+   tools that would write your files are refused during playback
+   (`emu_cmt_save`, `emu_cmt_record` with a path).
 
 ## Recipe: go back and try another way (rewind)
 
@@ -80,11 +143,14 @@ emu_input_send_keys_with_delays(...)   # another way from there
 emu_replay_record_stop()         # the file holds only the final path, rerecord_count = number of rewinds
 ```
 
-A rewind past a write to a disk (FDC, Quick Disk, IDE8), a recording to
-tape or a tape eject is refused (`a disk or the tape was written or
-ejected after frame N`): checkpoints do not hold media contents and the
-user files are never overwritten. No checkpoint is taken while autotype
-runs or the tape records.
+A rewind past a write to a disk (FDC, Quick Disk, IDE8), the start of a
+recording to tape with a file path, or a tape eject is refused (`a disk
+or the tape was written or ejected after frame N`): checkpoints do not
+hold media contents and the user files are never overwritten. A recording
+to tape without a path is not a media write: going back removes what it
+appended. No checkpoint is taken while autotype runs (nor during a long
+tape recording, see What a replay is).
+
 
 ## Recipe: jump to a frame while playing (seek)
 
@@ -137,7 +203,17 @@ emu_replay_goto(trace={"seq": 123456, "at": "before"},
 - Targets: `t` (GDG ticks: the `t` column of `emu_trace_read`,
   `time.ticks` of `emu_state_observe`, `stop_ticks`, `Cycle` of
   breakpoint conditions), `frame` + `frame_ticks` (absolute, as in
-  `emu_state_observe`), or `trace` `{seq, at}` (`before` = state before
+  `emu_state_observe`; the tick is counted from the real start of that
+  frame, so both forms land on the same point even after frames
+  shortened by the CKSW bit of the MZ-800; a tick at or beyond the end
+  of the frame returns `reached: false` with `out_of_range: true`; the
+  stop record of that run carries `out_of_range: true` as well, so the
+  result is also available after a deferred `emu_wait_stop(run_seq)`,
+  and its reason is `replay_goto_out_of_range` instead of `replay_goto`
+  (or stays `replay_end` when the run ended at the end of the
+  recording); a target before the start point of the recording is
+  refused), or `trace`
+  `{seq, at}` (`before` = state before
   the record, `after` = after it) on the current cputrack segment without
   a PC filter. The playback produces the same trace as the original run,
   so a trace recorded during playback is a valid map of the replay.
@@ -170,8 +246,8 @@ breakpoint and a deadline:
 
 ```
 emu_replay_goto(t=t_from)
-emu_bp_create_with_init(fields=["type","expr","enabled"],
-                        type="GLOBAL", expr="HL == 0xC000", enabled=True)
+emu_bp_create_with_init(addr=0, fields=["type","expr","enabled"],
+                        values={"type": "GLOBAL", "expr": "HL == 0xC000", "enabled": True})
 r = emu_resume(deadline_ticks=t_to - t_from); emu_wait_stop(run_seq=r["run_seq"])
 # reason "breakpoint" = first instruction start with HL == C000h;
 # "deadline" = the condition did not hold in the interval
@@ -188,8 +264,8 @@ The condition (`expr`, see `emulator://docs/bp_dsl`) may test memory too
 | write while paused at a frame boundary (after `emu_pause` sent while running, `emu_run(frames=N)`, a deadline, or right after the start) | recorded with position `p` |
 | write while paused **between** boundaries (after a step, a breakpoint, `emu_run_until_addr`) | refused: "changes the machine in a pause between frame boundaries" - run to a boundary first (`emu_run(frames=1)`) |
 | keys (`emu_input_*`, HID scripts) | taken from the key matrix at each frame boundary; in a pause only at a boundary |
-| tape control (`emu_cmt_play`, `_play_paused`, `_stop`, `_pause`, `_eject`, `emu_cmt_tape_seek`, `emu_cmt_record`) | recorded as a `cmt` event like a debugger write (running: `d`, pause at a boundary: `p`, refused between boundaries) |
-| `emu_snapshot_load*`, `emu_media_*` (except `emu_media_state`), `emu_cmt_open`, `emu_cmt_set_*` (speed, pulses, polarity, boost), `emu_cmt_hack_set`, block speed, `emu_settings_set`, `emu_platform_set`, `emu_periph_*`, `emu_memmap_set`, `emu_io_read`, `emu_freeze_add` | refused: "is not allowed while recording a replay" |
+| tape control (`emu_cmt_play`, `_play_paused`, `_stop`, `_pause`, `_eject`, `emu_cmt_tape_seek`, `emu_cmt_tape_step`, `emu_cmt_record`, `emu_cmt_new_tape`) | recorded as a `cmt` event like a debugger write (running: `d`, pause at a boundary: `p`, refused between boundaries) |
+| `emu_snapshot_load*`, `emu_media_*` (except `emu_media_state`), `emu_cmt_open`, `emu_cmt_set_*` (speed, pulses, polarity, boost, MZF size check), `emu_cmt_hack_set`, `emu_cmt_load_directly`, `emu_cmt_tape_set_block_speed`, `emu_cmt_save`, the tape edits and the changing tape tools (`emulator://docs/cmt_workflow`, What is refused when), `emu_settings_set`, `emu_platform_set`, `emu_periph_*`, `emu_memmap_set`, `emu_io_read`, `emu_freeze_add` | refused: "is not allowed while recording a replay" |
 | reset (`emu_reset`, F12) | taken at the next frame boundary (in a pause at a boundary at once) |
 | breakpoint action `poke` / `set` | not recorded; warning in the manifest |
 

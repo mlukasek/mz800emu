@@ -346,6 +346,7 @@ void videorec_get_status(st_VIDEOREC_STATUS *out)
 #include "hw-generic/gdg/gdgclk.h"
 #include "hw-generic/gdg/video.h"
 #include "hw-generic/psg/psg.h"
+#include "iface/iface_audio.h"
 #include "libs/avirec/avi_writer.h"
 #include "libs/avirec/zmbv_enc.h"
 #include "videorec_pipe.h"
@@ -1281,7 +1282,7 @@ static bool vr_psg_stereo(void)
 static void vr_current_values(uint8_t values[AUDIO_SRC_CHANNELS_COUNT])
 {
     for (int i = 0; i < AUDIO_SRC_CHANNELS_COUNT; i++) {
-        values[i] = (uint8_t)(g_audio.log ? (g_audio.log->src[i]->last_value & 0x0F) : 0);
+        values[i] = (uint8_t)(g_audio.log ? (g_audio.log->src[i]->last_value & VIDEOREC_AUDIO_VALUE_MASK) : 0);
     }
 }
 
@@ -2003,6 +2004,14 @@ static void vr_do_start(uint64_t frame_end)
                        frame_end, vr_sink, NULL);
     videorec_pipe_set_capture_cb(&g_vr.pipe, vr_audio_capture, NULL);
     videorec_pipe_set_stereo(&g_vr.pipe, vr_psg_stereo());
+    videorec_pipe_set_output_filter(&g_vr.pipe, iface_audio_output_filter_enabled(), true);
+    /* Střídavá vazba CTC0 naváže na stav vedený emulátorem. */
+    videorec_audio_set_ctc0_mean(&g_vr.pipe.audio, audio_ctc0_ac_mean(frame_end));
+    /* Střídavá vazba celého výstupu místo parkování PSG (MZ-800, MZ-1500), stav od emulátoru. */
+    videorec_audio_set_output_coupling(&g_vr.pipe.audio, AUDIO_HAVE_OUTPUT_COUPLING != 0);
+    double out_mean[2];
+    iface_audio_output_ac_means(frame_end, vr_psg_stereo(), out_mean);
+    videorec_audio_set_output_mean(&g_vr.pipe.audio, out_mean[0], out_mean[1]);
     memset(g_vr.audio_states, 0, sizeof(g_vr.audio_states));
     g_vr.audio_state_seq = 0;
     g_vr.sidecar = videorec_sidecar_new(VR_WIDTH, VR_AVI_HEIGHT, pf->fps_num, pf->fps_den, g_vr.audio_rate,
@@ -2779,8 +2788,10 @@ void videorec_on_screen_done(void)
     g_mutex_lock(&g_vr.mutex);
     vr_flag_clear(VIDEOREC_FLAG_REQ);
 
-    /* Konec snímku zaokrouhlený na násobek VIDEO_SCREEN_TICKS (hook běží na konci posledního řádku). */
-    uint64_t frame_end = ((gdg_get_total_ticks() + VIDEO_SCREEN_TICKS / 2) / VIDEO_SCREEN_TICKS) * VIDEO_SCREEN_TICKS;
+    /* Přesný čas konce snímku. Hook běží při zpracování konce posledního řádku, před uzavřením snímku
+     * v GDG, kdy čas GDG může konec snímku o část instrukce přesahovat; délka snímku je
+     * gdg_get_ending_frame_ticks() (na MZ-800 ji zkracuje bit CKSW, jinak VIDEO_SCREEN_TICKS). */
+    uint64_t frame_end = gdg_compute_total_ticks(gdg_get_ending_frame_ticks());
 
     if (g_vr.state == VIDEOREC_STATE_IDLE) {
         if (g_vr.req_start && g_vr.initialized) vr_do_start(frame_end);
@@ -2809,6 +2820,21 @@ void videorec_on_screen_done(void)
             return;
         }
         vr_rt_leave(frame_end); /* tento snímek už patří emulačnímu času */
+    }
+
+    /* Nahrávka má pevný rastr snímků po ticks_per_frame (20 ms). Snímek zkrácený bitem CKSW (MZ-800)
+     * končí mimo rastr: skončí-li dřív než další bod rastru, do nahrávky nejde (asi každý 70. snímek
+     * při trvalém CKSW); skončí-li až za ním, zapíše se s časem bodu rastru. Zvuk se renderuje po
+     * bodech rastru a zůstává souvislý. Odchylka o celý snímek a víc je skutečná nespojitost (šev)
+     * a řeší se dál jako dřív. Bez CKSW konec snímku na rastru leží vždy. */
+    if (frame_end != g_vr.pipe.next_frame_end) {
+        uint64_t next = g_vr.pipe.next_frame_end;
+        uint64_t tpf = g_vr_platform.ticks_per_frame;
+        if ((frame_end < next) && ((next - frame_end) < tpf)) {
+            g_mutex_unlock(&g_vr.mutex);
+            return;
+        }
+        if ((frame_end > next) && ((frame_end - next) < tpf)) frame_end = next;
     }
 
     /* Chyba zápisu ve writeru -> ukončit nahrávání s chybou. */
@@ -2930,6 +2956,8 @@ void videorec_audio_horizon(uint64_t ticks)
         /* Rozložení L/R podle aktuálního stavu PSG (MZ-800 může druhý PSG zapnout za běhu),
          * jako SDL cesta, která o mixu rozhoduje po blocích podle stereo příznaku logu. */
         videorec_pipe_set_stereo(&g_vr.pipe, vr_psg_stereo());
+        /* Volba výstupní propusti jde přepnout za běhu (plynulý přechod jako SDL cesta). */
+        videorec_pipe_set_output_filter(&g_vr.pipe, iface_audio_output_filter_enabled(), false);
         videorec_pipe_horizon(&g_vr.pipe, ticks);
     }
     g_mutex_unlock(&g_vr.mutex);

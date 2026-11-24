@@ -48,7 +48,7 @@
  *		SEA >= 0x05 ( << 6 = 0x0140 )
  *              SW > SOF
  *		SEA > SSA
- *              SW = SEA - SSA
+ *              (SW = SEA - SSA podle měření na MZ-800 scroll nevypíná, viz hwscroll_regs_changed())
  *
  *      Update - tohle se zrejme nekontroluje:
  *
@@ -104,12 +104,21 @@ static inline void hwscroll_flush_elapsed_pixels(void)
 {
     if (!GDG_MZ800_DMD_TEST_MZ700)
     {
-        framebuffer_MZ800_screen_changed();
+        /* Místo, odkud platí nový registr, viz GDG_SCROLL_WR_LEAD_TICKS. */
+        framebuffer_MZ800_reg_write_begin(GDG_SCROLL_WR_LEAD_TICKS, 0);
     };
 }
 
 /**
  * @brief Přepočítá příznak g_hwscroll.enabled podle aktuálních registrů.
+ *
+ * Podmínky 1 až 5 (SOF > 0, SSA <= 1E00h, SEA >= 140h, SW > SOF, SEA > SSA)
+ * jsou z původního modelu emulátoru, na stroji neověřené [neověřeno].
+ * Rovnost SW = SEA - SSA scroll nezapíná ani nevypíná: na skutečném MZ-800
+ * odpovídá obraz s hodnotami, které ji porušují, vzorci posunu adres, ve
+ * kterém SW vystupuje samostatně (mz800-knowledge hw-measurement/vysledky.md
+ * oddíl 17, U4; C model netlistu totéž, hw/10c-hw-scroll.md OPRAVA
+ * 2026-11-22). Emulátor do opravy scroll při porušení vypínal.
  *
  * @pre Uplynulá část řádku je dokreslená (hwscroll_flush_elapsed_pixels()
  *      před změnou registru).
@@ -124,8 +133,7 @@ static void hwscroll_regs_changed(void)
         (g_hwscroll.regSEA >= 0x0140) &&
         //( g_hwscroll.regSEA <= 0x1f40 ) &&
         (g_hwscroll.regSW > g_hwscroll.regSOF) &&
-        (g_hwscroll.regSEA > g_hwscroll.regSSA) &&
-        (g_hwscroll.regSW == (g_hwscroll.regSEA - g_hwscroll.regSSA)))
+        (g_hwscroll.regSEA > g_hwscroll.regSSA))
     {
 
         g_hwscroll.enabled = 1;
@@ -164,10 +172,6 @@ static void hwscroll_regs_changed(void)
         if (!(g_hwscroll.regSW > g_hwscroll.regSOF))
         {
             printf("\t! regSW > regSOF\n");
-        };
-        if (!(g_hwscroll.regSW == (g_hwscroll.regSEA - g_hwscroll.regSSA)))
-        {
-            printf("\t! regSW == ( regSEA - regSSA )\n");
         };
 #endif
     };
@@ -225,6 +229,12 @@ void hwscroll_set_reg(unsigned addr, uint8_t value)
     };
 
     hwscroll_regs_changed();
+
+    if (!GDG_MZ800_DMD_TEST_MZ700)
+    {
+        /* Překreslit už nakreslenou část řádku za místem změny. */
+        framebuffer_MZ800_reg_write_end();
+    };
 }
 
 /*

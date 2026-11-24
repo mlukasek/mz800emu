@@ -2,7 +2,8 @@
  * test_psg.c — unit testy pro PSG (Programmable Sound Generator SN76489AN)
  *
  * Testuje: inicializaci, zápis do registrů, nastavení frekvence,
- *          atenuace, noise generátor, step processing
+ *          atenuace, noise generátor (rychlost posunu, 15bitový registr,
+ *          nulování zápisem), dělič tónu 0 a 1, step processing
  *
  * Licence: GPLv3
  */
@@ -12,7 +13,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <math.h>
+
 #include "hw-generic/psg/psg.h"
+#include "audio.h"
+#include "iface/iface_audio.h"
+#include "videorec/videorec_audio.h"
 
 void setUp(void) { }
 void tearDown(void) { }
@@ -397,6 +403,441 @@ void test_psg_write_log_stereo_broadcast(void)
     psg_init(false); /* vrátit do mono pro následující testy */
 }
 
+/* ================================================================
+ * ŠUM A DĚLIČ TÓNU PODLE MĚŘENÍ NA HW (2026-11-14)
+ * ================================================================ */
+
+/** @brief Počet kroků PSG na jeden posun registru šumu při pevné rychlosti NF = 0. */
+#define NOISE_SHIFT_STEPS_NF0 32
+
+/**
+ * @brief Krokuje PSG a vrátí počet kroků do první změny výstupu kanálu na `level`.
+ *
+ * @param ch    Kanál.
+ * @param level Hledaná úroveň výstupu (0 nebo 1).
+ * @param limit Nejvyšší počet kroků.
+ * @return Počet provedených kroků; `limit + 1`, když změna nenastala.
+ */
+static unsigned steps_until_level(unsigned ch, unsigned level, unsigned limit)
+{
+    for (unsigned n = 1; n <= limit; n++) {
+        psg_instance_step(&g_psg);
+        if (g_psg.channel[ch].output_signal == level) return n;
+    }
+    return limit + 1;
+}
+
+/**
+ * @brief Uvede PSG do čistého stavu včetně čítačů a výstupů kanálů.
+ *
+ * psg_init() nastavuje jen typy kanálů, hlasitost a registr šumu; čítače
+ * z předchozího testu nechává být. Testy časování potřebují čítače na nule.
+ */
+static void psg_clean_init(void)
+{
+    memset(&g_psg_module, 0, sizeof(g_psg_module));
+    psg_init(false);
+}
+
+/* PSG - výchozí stav registru šumu je 15bitový (jen bit 14) */
+void test_psg_noise_reset_value(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    TEST_ASSERT_EQUAL_HEX16(PSG_NOISE_SR_RESET, g_psg.channel[PSG_CHANNEL_3].noise.shiftregister);
+    TEST_ASSERT_EQUAL_HEX16(0x4000, PSG_NOISE_SR_RESET);
+}
+
+/* PSG - periodický šum: perioda 15 posunů, pulz jeden posun, posun 512 T (32 kroků) */
+void test_psg_noise_periodic_fixed_rate(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0xF0);   /* hlasitost šumu na maximum */
+    psg_write_byte(PSG_CH_LEFT, 0xE0);   /* periodický šum, NF = 0 */
+
+    /* První jednička je na výstupu po 14 posunech. Čítač posunu se zápisem
+     * nenuluje (a zápis sám může PSG dokrokovat), první posun proto přijde
+     * za 1 až 32 kroků. */
+    unsigned first = steps_until_level(PSG_CHANNEL_3, 1, 100000);
+    TEST_ASSERT_GREATER_THAN_UINT(13 * NOISE_SHIFT_STEPS_NF0, first);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(14 * NOISE_SHIFT_STEPS_NF0, first);
+    /* pulz trvá jeden posun, perioda 15 posunů */
+    TEST_ASSERT_EQUAL_UINT(NOISE_SHIFT_STEPS_NF0, steps_until_level(PSG_CHANNEL_3, 0, 100000));
+    TEST_ASSERT_EQUAL_UINT(14 * NOISE_SHIFT_STEPS_NF0, steps_until_level(PSG_CHANNEL_3, 1, 100000));
+    TEST_ASSERT_EQUAL_UINT(NOISE_SHIFT_STEPS_NF0, steps_until_level(PSG_CHANNEL_3, 0, 100000));
+    TEST_ASSERT_EQUAL_UINT(14 * NOISE_SHIFT_STEPS_NF0, steps_until_level(PSG_CHANNEL_3, 1, 100000));
+}
+
+/* PSG - pevné rychlosti šumu: posun po 32, 64 a 128 krocích (512, 1024, 2048 T) */
+void test_psg_noise_fixed_rates(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    for (unsigned nf = 0; nf < 3; nf++) {
+        unsigned shift = NOISE_SHIFT_STEPS_NF0 << nf;
+        psg_clean_init();
+        psg_write_byte(PSG_CH_LEFT, 0xF0);
+        psg_write_byte(PSG_CH_LEFT, (uint8_t)(0xE0 | nf));
+        (void) steps_until_level(PSG_CHANNEL_3, 1, 100000);
+        TEST_ASSERT_EQUAL_UINT(shift, steps_until_level(PSG_CHANNEL_3, 0, 100000));
+        TEST_ASSERT_EQUAL_UINT(14 * shift, steps_until_level(PSG_CHANNEL_3, 1, 100000));
+    }
+}
+
+/* PSG - šum řízený tónem 2: posun jednou za celou periodu tónu (2 x dělič kroků) */
+void test_psg_noise_tone2_rate(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0xC0);   /* tón 2: dolní 4 bity děliče = 0 */
+    psg_write_byte(PSG_CH_LEFT, 0x01);   /* horní bity: dělič 010h */
+    psg_write_byte(PSG_CH_LEFT, 0xF0);
+    psg_write_byte(PSG_CH_LEFT, 0xE3);   /* periodický šum, NF = 3 */
+
+    (void) steps_until_level(PSG_CHANNEL_3, 1, 100000);
+    /* dělič 16: posun po 32 krocích (512 T), perioda 15 posunů = 7680 T */
+    TEST_ASSERT_EQUAL_UINT(32, steps_until_level(PSG_CHANNEL_3, 0, 100000));
+    TEST_ASSERT_EQUAL_UINT(14 * 32, steps_until_level(PSG_CHANNEL_3, 1, 100000));
+}
+
+/* PSG - bílý šum: 15bitový registr, zpětná vazba bit 0 xor bit 1, perioda 32767 posunů */
+void test_psg_noise_white_sequence(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    enum { BITS = 32767 + 64 };
+    static uint8_t bits[BITS];
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0xF0);
+    psg_write_byte(PSG_CH_LEFT, 0xE4);   /* bílý šum, NF = 0 */
+
+    for (unsigned i = 0; i < BITS; i++) {
+        for (unsigned k = 0; k < NOISE_SHIFT_STEPS_NF0; k++) psg_instance_step(&g_psg);
+        bits[i] = (uint8_t) g_psg.channel[PSG_CHANNEL_3].output_signal;
+    }
+    unsigned ones = 0;
+    for (unsigned i = 0; i + 15 < BITS; i++) {
+        TEST_ASSERT_EQUAL_UINT8(bits[i] ^ bits[i + 1], bits[i + 15]);
+    }
+    for (unsigned i = 0; i < 32767; i++) ones += bits[i];
+    TEST_ASSERT_EQUAL_UINT(16384, ones);                 /* maximální sekvence: 2^14 jedniček */
+    for (unsigned i = 0; i < 64; i++) {
+        TEST_ASSERT_EQUAL_UINT8(bits[i], bits[i + 32767]);
+    }
+}
+
+/* PSG - registr šumu nuluje řídicí i datový bajt, zápis hlasitosti ne */
+void test_psg_noise_reset_on_write(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    st_PSG_NOISE *noise = &g_psg.channel[PSG_CHANNEL_3].noise;
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0xF0);
+    psg_write_byte(PSG_CH_LEFT, 0xE0);
+    for (unsigned k = 0; k < 5 * NOISE_SHIFT_STEPS_NF0; k++) psg_instance_step(&g_psg);
+    TEST_ASSERT_NOT_EQUAL(PSG_NOISE_SR_RESET, noise->shiftregister);
+
+    /* zápis hlasitosti šumu registr nenuluje */
+    uint16_t before = noise->shiftregister;
+    psg_write_byte(PSG_CH_LEFT, 0xF0);
+    TEST_ASSERT_EQUAL_HEX16(before, noise->shiftregister);
+
+    /* řídicí bajt se stejnou hodnotou nuluje */
+    psg_write_byte(PSG_CH_LEFT, 0xE0);
+    TEST_ASSERT_EQUAL_HEX16(PSG_NOISE_SR_RESET, noise->shiftregister);
+    TEST_ASSERT_EQUAL_UINT(0, g_psg.channel[PSG_CHANNEL_3].output_signal);
+
+    /* datový bajt do registru šumu nuluje také */
+    for (unsigned k = 0; k < 5 * NOISE_SHIFT_STEPS_NF0; k++) psg_instance_step(&g_psg);
+    TEST_ASSERT_NOT_EQUAL(PSG_NOISE_SR_RESET, noise->shiftregister);
+    psg_write_byte(PSG_CH_LEFT, 0x00);
+    TEST_ASSERT_EQUAL_HEX16(PSG_NOISE_SR_RESET, noise->shiftregister);
+    TEST_ASSERT_EQUAL_INT(NOISE_TYPE_PERIODIC, noise->type);
+    TEST_ASSERT_EQUAL_INT(NOISE_DIV_TYPE0, noise->div_type);
+}
+
+/* PSG - dělič tónu 000h se chová jako 1024, dělič 001h drží výstup v 1
+ * (model čipu; zvukový log z toho dělá poloviční výchylku, viz
+ * test_psg_tone_divider_one_logs_half_level) */
+void test_psg_tone_divider_zero_and_one(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0x80);   /* tón 0: dělič 000h */
+    psg_write_byte(PSG_CH_LEFT, 0x00);
+    psg_write_byte(PSG_CH_LEFT, 0x90);   /* hlasitost na maximum */
+
+    unsigned level = g_psg.channel[PSG_CHANNEL_0].output_signal;
+    (void) steps_until_level(PSG_CHANNEL_0, level ^ 1u, 5000);       /* první překlopení */
+    TEST_ASSERT_EQUAL_UINT(1024, steps_until_level(PSG_CHANNEL_0, level, 5000));
+    TEST_ASSERT_EQUAL_UINT(1024, steps_until_level(PSG_CHANNEL_0, level ^ 1u, 5000));
+
+    psg_write_byte(PSG_CH_LEFT, 0x81);   /* dělič 001h */
+    psg_write_byte(PSG_CH_LEFT, 0x00);
+    psg_instance_step(&g_psg);
+    TEST_ASSERT_EQUAL_UINT(1, g_psg.channel[PSG_CHANNEL_0].output_signal);
+    TEST_ASSERT_EQUAL_UINT(5001, steps_until_level(PSG_CHANNEL_0, 0, 5000));
+}
+
+/* ================================================================
+ * ZVUKOVÁ CESTA PODLE MĚŘENÍ NA HW (2026-11-18)
+ * ================================================================ */
+
+/**
+ * @brief Provede jeden krok PSG přes zvukový log a vrátí zapsanou hodnotu kanálu.
+ *
+ * Posune čas GDG o jednu periodu PSG (PSG_DIVIDER tiků) a dokrokuje zvukový
+ * log do něj. Čas se posouvá v GDG, ne jen v logu: psg_write_byte() krokuje
+ * log do času GDG a ten nesmí být před last_psg_timestamp logu.
+ *
+ * @param ch Kanál PSG0 (0 až 3).
+ * @return Hodnota zvukového logu kanálu po kroku (0 až 30).
+ * @pre Log je dokrokovaný do času GDG (platí po psg_write_byte()).
+ */
+static int log_value_after_step(unsigned ch)
+{
+    g_gdg.total_elapsed.ticks += PSG_DIVIDER;
+    audio_log_fill_psg(gdg_get_total_ticks());
+    return g_audio.log->src[AUDIO_SOURCE_ID_SHIFT_PSG0 + ch]->last_value;
+}
+
+/* PSG - čítač tónového kanálu běží i při vypnuté hlasitosti (útlum 15) */
+void test_psg_muted_tone_counter_runs(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0x80);   /* tón 0: dělič 010h, hlasitost zůstává vypnutá */
+    psg_write_byte(PSG_CH_LEFT, 0x01);
+    TEST_ASSERT_EQUAL_INT(PSG_OUT_OFF, g_psg.channel[PSG_CHANNEL_0].attn);
+
+    unsigned level = g_psg.channel[PSG_CHANNEL_0].output_signal;
+    (void) steps_until_level(PSG_CHANNEL_0, level ^ 1u, 5000);       /* první překlopení */
+    TEST_ASSERT_EQUAL_UINT(16, steps_until_level(PSG_CHANNEL_0, level, 5000));
+    TEST_ASSERT_EQUAL_UINT(16, steps_until_level(PSG_CHANNEL_0, level ^ 1u, 5000));
+
+    /* Zapnutí hlasitosti fázi nemění: další překlopení přijde po zbytku
+     * půlperiody. Útlum se nastavuje přímo ve stavu - psg_write_byte() posouvá
+     * čas (čekání procesoru) a mohl by PSG sám odkrokovat. */
+    for (unsigned k = 0; k < 5; k++) psg_instance_step(&g_psg);
+    g_psg.channel[PSG_CHANNEL_0].attn = PSG_OUT_MAX;
+    TEST_ASSERT_EQUAL_UINT(11, steps_until_level(PSG_CHANNEL_0, level, 5000));
+    TEST_ASSERT_EQUAL_UINT(16, steps_until_level(PSG_CHANNEL_0, level ^ 1u, 5000));
+}
+
+/* PSG - dva vypnuté kanály, které dostaly stejný dělič v různou dobu, nejsou po zapnutí ve fázi */
+void test_psg_muted_channels_keep_phase(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    /* Stav se nastavuje přímo (psg_write_byte() posouvá čas a mohl by PSG
+     * sám odkrokovat). Oba kanály mají hlasitost vypnutou a čítače na nule. */
+    psg_clean_init();
+    g_psg.channel[PSG_CHANNEL_0].tone.divider = 0x10;
+    g_psg.channel[PSG_CHANNEL_1].tone.divider = 0x07;
+    for (unsigned k = 0; k < 40; k++) psg_instance_step(&g_psg);
+    g_psg.channel[PSG_CHANNEL_1].tone.divider = 0x10;   /* stejný dělič o 40 kroků později */
+    for (unsigned k = 0; k < 100; k++) psg_instance_step(&g_psg);
+    g_psg.channel[PSG_CHANNEL_0].attn = PSG_OUT_MAX;    /* oba kanály zapnout */
+    g_psg.channel[PSG_CHANNEL_1].attn = PSG_OUT_MAX;
+
+    /* Kanál 1 začal čítat dělič 010h jindy než kanál 0; fázový rozdíl se
+     * zapnutím hlasitosti nesrovná (před opravou stály oba čítače na nule
+     * a po zapnutí běžely ve fázi). */
+    unsigned differ = 0;
+    for (unsigned k = 0; k < 64; k++) {
+        psg_instance_step(&g_psg);
+        if (g_psg.channel[PSG_CHANNEL_0].output_signal != g_psg.channel[PSG_CHANNEL_1].output_signal) differ++;
+    }
+    TEST_ASSERT_GREATER_THAN_UINT(0, differ);
+}
+
+/* PSG - šumový kanál posouvá registr i při vypnuté hlasitosti ([neověřeno] na HW) */
+void test_psg_muted_noise_counter_runs(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0xE0);   /* periodický šum, NF = 0, hlasitost vypnutá */
+    TEST_ASSERT_EQUAL_INT(PSG_OUT_OFF, g_psg.channel[PSG_CHANNEL_3].attn);
+
+    unsigned first = steps_until_level(PSG_CHANNEL_3, 1, 100000);
+    TEST_ASSERT_GREATER_THAN_UINT(13 * NOISE_SHIFT_STEPS_NF0, first);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(14 * NOISE_SHIFT_STEPS_NF0, first);
+    TEST_ASSERT_EQUAL_UINT(NOISE_SHIFT_STEPS_NF0, steps_until_level(PSG_CHANNEL_3, 0, 100000));
+}
+
+/* Zvukový log - vypnutý kanál nehraje, i když jeho čítač běží */
+void test_psg_muted_channel_logs_silence(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0x82);   /* tón 0: dělič 002h, hlasitost vypnutá */
+    psg_write_byte(PSG_CH_LEFT, 0x00);
+    /* Čítač může doběhnout předchozí dělič (000h = 1024 kroků); počkat na
+     * první překlopení, od něj platí dělič 002h. */
+    unsigned first = g_psg.channel[PSG_CHANNEL_0].output_signal;
+    for (unsigned k = 0; k < 1100 && g_psg.channel[PSG_CHANNEL_0].output_signal == first; k++) {
+        TEST_ASSERT_EQUAL_INT(0, log_value_after_step(PSG_CHANNEL_0));
+    }
+    TEST_ASSERT_NOT_EQUAL(first, g_psg.channel[PSG_CHANNEL_0].output_signal);
+    unsigned ones = 0;
+    for (unsigned k = 0; k < 16; k++) {
+        TEST_ASSERT_EQUAL_INT(0, log_value_after_step(PSG_CHANNEL_0));
+        ones += g_psg.channel[PSG_CHANNEL_0].output_signal;
+    }
+    TEST_ASSERT_EQUAL_UINT(8, ones);     /* výstup čítače se přitom překlápí */
+
+    /* po zapnutí hlasitosti log střídá 0 a stupeň 15 - útlum */
+    psg_write_byte(PSG_CH_LEFT, 0x93);   /* útlum 3 */
+    unsigned high = 0;
+    for (unsigned k = 0; k < 16; k++) {
+        int v = log_value_after_step(PSG_CHANNEL_0);
+        TEST_ASSERT_TRUE(v == 0 || v == 12);
+        if (v == 12) high++;
+    }
+    TEST_ASSERT_EQUAL_UINT(8, high);
+}
+
+/* Zvukový log - tón s děličem 001h je stálá poloviční výchylka stupně hlasitosti */
+void test_psg_tone_divider_one_logs_half_level(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    psg_clean_init();
+    psg_write_byte(PSG_CH_LEFT, 0x81);   /* tón 0: dělič 001h */
+    psg_write_byte(PSG_CH_LEFT, 0x00);
+
+    for (unsigned attn = 0; attn < 15; attn++) {
+        psg_write_byte(PSG_CH_LEFT, (uint8_t)(0x90 | attn));
+        for (unsigned k = 0; k < 4; k++) {
+            int v = log_value_after_step(PSG_CHANNEL_0);
+            TEST_ASSERT_EQUAL_INT(AUDIO_LEVEL_HALF_BASE + AUDIO_MAXVAL_PER_CHANNEL - (int)attn, v);
+            TEST_ASSERT_TRUE(audio_level_is_half((unsigned)v));
+            TEST_ASSERT_EQUAL_UINT(AUDIO_MAXVAL_PER_CHANNEL - attn, audio_level_step((unsigned)v));
+        }
+    }
+    /* vypnutý kanál je ticho i s děličem 001h */
+    psg_write_byte(PSG_CH_LEFT, 0x9F);
+    TEST_ASSERT_EQUAL_INT(0, log_value_after_step(PSG_CHANNEL_0));
+
+    /* šumový kanál poloviční výchylku nepíše */
+    psg_write_byte(PSG_CH_LEFT, 0xF0);
+    psg_write_byte(PSG_CH_LEFT, 0xE0);
+    for (unsigned k = 0; k < 64; k++) {
+        TEST_ASSERT_FALSE(audio_level_is_half((unsigned)log_value_after_step(PSG_CHANNEL_3)));
+    }
+}
+
+/** @brief Poměr dvou výchylek v dB. */
+static double ratio_db(double a, double b)
+{
+    return 20.0 * log10(a / b);
+}
+
+/* Tabulky úrovní - poloviční výchylka je o 6,2 dB pod plnou pro všechny útlumy */
+void test_audio_levels_half_is_6db2_below_full(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    float saved_gain[AUDIO_SRC_CHANNELS_COUNT];
+    for (int i = 0; i < AUDIO_SRC_CHANNELS_COUNT; i++) {
+        saved_gain[i] = g_iface_audio.gain[i];
+        g_iface_audio.gain[i] = 1.0f;
+        iface_audio_set_src_volume(i, 100);
+    }
+    static float lv[VIDEOREC_AUDIO_MAX_CHANNELS][VIDEOREC_AUDIO_LEVELS];
+    memset(lv, 0, sizeof(lv));
+    iface_audio_build_videorec_levels(lv, VIDEOREC_AUDIO_MAX_CHANNELS);
+
+    for (int ch = 1; ch < AUDIO_SRC_CHANNELS_COUNT; ch++) {
+        const float *sdl = g_iface_audio.SN76489_volume_value[ch];
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, sdl[0]);
+        TEST_ASSERT_EQUAL_FLOAT(1.0f, sdl[15]);
+        for (int step = 1; step <= 15; step++) {
+            int half = AUDIO_LEVEL_HALF_BASE + step;
+            /* SDL cesta (tabulka výchylek) i reference a video záznam (tabulka úrovní) */
+            TEST_ASSERT_DOUBLE_WITHIN(0.3, -6.2, ratio_db(sdl[half], sdl[step]));
+            TEST_ASSERT_DOUBLE_WITHIN(0.3, -6.2, ratio_db(lv[ch][half], lv[ch][step]));
+            /* krok hlasitosti zůstává 2 dB */
+            if (step > 1) TEST_ASSERT_DOUBLE_WITHIN(0.01, 2.0, ratio_db(sdl[step], sdl[step - 1]));
+        }
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, lv[ch][VIDEOREC_AUDIO_LEVELS - 1]);
+    }
+    for (int i = 0; i < AUDIO_SRC_CHANNELS_COUNT; i++) g_iface_audio.gain[i] = saved_gain[i];
+}
+
+/* Tabulky úrovní a mix - CTC0 je 1,49 násobek jednoho kanálu PSG s útlumem 0 */
+void test_audio_levels_ctc0_to_psg_ratio(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    float saved_gain[AUDIO_SRC_CHANNELS_COUNT];
+    for (int i = 0; i < AUDIO_SRC_CHANNELS_COUNT; i++) {
+        saved_gain[i] = g_iface_audio.gain[i];
+        g_iface_audio.gain[i] = 1.0f;
+        iface_audio_set_src_volume(i, 100);
+    }
+    static float lv[VIDEOREC_AUDIO_MAX_CHANNELS][VIDEOREC_AUDIO_LEVELS];
+    memset(lv, 0, sizeof(lv));
+    iface_audio_build_videorec_levels(lv, VIDEOREC_AUDIO_MAX_CHANNELS);
+
+    /* reference a video záznam: +3,5 dB */
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, lv[0][0]);
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, 1.49, (double)lv[0][15] / (double)lv[1][15]);
+    TEST_ASSERT_DOUBLE_WITHIN(0.1, 3.5, ratio_db(lv[0][15], lv[1][15]));
+
+    /* SDL cesta: střední zesílení převzorkování CTC0 krát násobitel mixu */
+    float k = videorec_audio_sdl_ctc0_gain(IFACE_AUDIO_CTC5253_SAMPLE_RATE / VIDEO_SCREENS_PER_SEC,
+                                           IFACE_AUDIO_SAMPLE_RATE / VIDEO_SCREENS_PER_SEC);
+    double psg_channel = (double)g_iface_audio.SN76489_volume_value[1][15] / (double)PSG_CHANNELS_COUNT;
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, 1.49, (double)(k * iface_audio_ctc0_mix_level()) / psg_channel);
+
+    /* uživatelská hlasitost zůstává násobitelem navíc */
+    g_iface_audio.gain[0] = 0.5f;
+    g_iface_audio.gain[1] = 2.0f;
+    iface_audio_build_videorec_levels(lv, VIDEOREC_AUDIO_MAX_CHANNELS);
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, 1.49 * 0.5 / 2.0, (double)lv[0][15] / (double)lv[1][15]);
+
+    for (int i = 0; i < AUDIO_SRC_CHANNELS_COUNT; i++) g_iface_audio.gain[i] = saved_gain[i];
+}
+
+/* Volba věrné výstupní propusti: výchozí zapnuto, jde přepnout, tabulky úrovní se jí nemění.
+ * Samostatný MZ-700 propust nemá: volba je tam trvale vypnutá a zapnout nejde. */
+void test_audio_output_filter_option(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+#if !AUDIO_HAVE_OUTPUT_FILTER
+    TEST_ASSERT_FALSE(iface_audio_output_filter_enabled());
+    iface_audio_set_output_filter(true);
+    TEST_ASSERT_FALSE(iface_audio_output_filter_enabled());
+    return;
+#endif
+    TEST_ASSERT_TRUE(iface_audio_output_filter_enabled());   /* výchozí stav [AUDIO] output_filter */
+    static float lv_on[VIDEOREC_AUDIO_MAX_CHANNELS][VIDEOREC_AUDIO_LEVELS];
+    static float lv_off[VIDEOREC_AUDIO_MAX_CHANNELS][VIDEOREC_AUDIO_LEVELS];
+    memset(lv_on, 0, sizeof(lv_on));
+    memset(lv_off, 0, sizeof(lv_off));
+    iface_audio_build_videorec_levels(lv_on, VIDEOREC_AUDIO_MAX_CHANNELS);
+    iface_audio_set_output_filter(false);
+    TEST_ASSERT_FALSE(iface_audio_output_filter_enabled());
+    iface_audio_build_videorec_levels(lv_off, VIDEOREC_AUDIO_MAX_CHANNELS);
+    /* žádné dorovnání hlasitosti: úrovně kanálů jsou v obou stavech stejné */
+    TEST_ASSERT_EQUAL_MEMORY(lv_on, lv_off, sizeof(lv_on));
+    iface_audio_set_output_filter(true);
+    TEST_ASSERT_TRUE(iface_audio_output_filter_enabled());
+}
+
 /* === MAIN === */
 
 int main(int argc, char *argv[])
@@ -423,6 +864,25 @@ int main(int argc, char *argv[])
     RUN_TEST(test_psg_latch_mechanism);
     RUN_TEST(test_psg_stereo_broadcast);
     RUN_TEST(test_psg_stereo_individual);
+
+    /* šum a dělič tónu podle měření na HW */
+    RUN_TEST(test_psg_noise_reset_value);
+    RUN_TEST(test_psg_noise_periodic_fixed_rate);
+    RUN_TEST(test_psg_noise_fixed_rates);
+    RUN_TEST(test_psg_noise_tone2_rate);
+    RUN_TEST(test_psg_noise_white_sequence);
+    RUN_TEST(test_psg_noise_reset_on_write);
+    RUN_TEST(test_psg_tone_divider_zero_and_one);
+
+    /* zvuková cesta podle měření na HW */
+    RUN_TEST(test_psg_muted_tone_counter_runs);
+    RUN_TEST(test_psg_muted_channels_keep_phase);
+    RUN_TEST(test_psg_muted_noise_counter_runs);
+    RUN_TEST(test_psg_muted_channel_logs_silence);
+    RUN_TEST(test_psg_tone_divider_one_logs_half_level);
+    RUN_TEST(test_audio_levels_half_is_6db2_below_full);
+    RUN_TEST(test_audio_levels_ctc0_to_psg_ratio);
+    RUN_TEST(test_audio_output_filter_option);
 
     /* write log */
     RUN_TEST(test_psg_write_log_default_disabled);

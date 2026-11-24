@@ -69,10 +69,11 @@ jsou odmítnuty s chybou - pro vygenerovaný výpis použijte `--help`.
 | `--help` | - | Vypsat seznam options a skončit. |
 | `--version` | - | Vypsat verzi, revizi, datum buildu, původ zdrojů (větev, commit, neuložené změny, pokud jsou k dispozici), překladač, zakompilované části, verze SDL a GLib a hostitelský OS, pak skončit. Funguje ve všech binárkách (`mz800emu`, `mz700emu-pal`, `mz700emu-ntsc`, `mz1500emu`) i s `--mcp-pipe`; emulátor ani okno se nespouští. |
 | `--console` | - | Pouze Windows: alokovat okno konzole pro stdout/stderr. |
-| `--run-mzf` | `<filepath>` | Po startu emulátoru automaticky načíst a spustit zadaný MZF soubor. |
-| `--cmt` | `<filepath>` | Po startu vložit pásku do virtuálního kazetofonu: `.mzf`, `.m12`, `.mzt`, `.tap`, `.wav` nebo `.wave`. Je-li zapnutý CMT hack, vypne se jen pro toto spuštění (v `.ini` zůstane původní nastavení). V okně se otevře okno Virtual CMT. Chybějící soubor nebo neznámá přípona = chyba a konec. |
-| `--cmt-play` | - | S `--cmt`: po vložení stisknout PLAY. Když emulátor startuje přes ROM, ROM při své inicializaci motor kazetofonu zastaví, takže páska čeká v PLAY + PAUSE; hned hraje jen spolu s `--run-mzf`. |
-| `--cmt-play-pause` | - | S `--cmt`: páska čeká v PLAY + PAUSE a rozjede se, až ROM nebo program zapne motor kazetofonu (např. `LOAD` v BASICu, nahrávání z monitoru). Nelze kombinovat s `--cmt-play`. |
+| `--run-mzf` | `<filepath>` | Po startu emulátoru automaticky načíst a spustit zadaný MZF soubor. Program startuje, jako by ho z pásky nahrála ROM, bez průchodu zavaděčem ROM; registr BC nese kód zařízení nastavený v menu HW & Devices > CMT > CMT Options > Device for Direct MZF Start (výchozí CMT). |
+| `--run-mzf-device` | `<cmt\|fd\|qd\|rd\|value>` | S `--run-mzf`: kód zařízení v registru BC, jako by byl program nahrán z daného zařízení: `cmt` (0100h, na MZ-700 0000h - hodnota, kterou nechá ROM po nahrání z pásky), `fd` (0200h), `qd` (0300h), `rd` nebo `sram` (0000h), nebo číslo 0-65535 (`512`, `0x0200` nebo `0200h`; desítkové číslo se píše bez úvodních nul (`0200` je chyba, pište `0x0200` nebo `0200h`)). Některé programy, například BASIC 1Z-016, podle něj volí výchozí zařízení. Platí jen pro tento start; nastavení v menu a v INI souboru zůstane. Neplatná hodnota nebo chybějící `--run-mzf` je chyba. |
+| `--cmt` | `<filepath>` | Po startu vložit pásku do virtuálního kazetofonu: `.tmz`, `.tzx`, `.mzf`, `.m12`, `.mzt`, `.tap`, `.wav` nebo `.wave` (viz [devices/cmt.md](devices/cmt.md)). Je-li zapnutý CMT hack, vypne se jen pro toto spuštění (v `.ini` zůstane původní nastavení). V okně se otevře okno Virtual CMT. Chybějící soubor nebo neznámá přípona = chyba a konec. |
+| `--cmt-play` | - | S `--cmt`: po vložení stisknout PLAY. Když emulátor startuje přes ROM, ROM při své inicializaci motor kazetofonu zastaví, takže páska v PLAY čeká na motor (Waiting for motor); hned hraje jen spolu s `--run-mzf`. |
+| `--cmt-play-pause` | - | S `--cmt`: páska v PLAY čeká na motor (Waiting for motor) a rozjede se, až ROM nebo program zapne motor kazetofonu (např. `LOAD` v BASICu, nahrávání z monitoru). Nelze kombinovat s `--cmt-play`. |
 | `--cmt-boot` | - | Jen MZ-800, s `--cmt`: jako `--cmt-play-pause` a emulátor navíc od startu drží klávesu C, dokud ROM nezapne motor, takže bootovací nabídka nahraje program z pásky. Funguje v obou polohách přepínače režimu. Nelze kombinovat s `--run-mzf` ani s `--cmt-play`. |
 | `--fdd` | `<N>=<filepath>` | Po startu vložit DSK obraz do disketové mechaniky N; volbu lze opakovat. N 0-3 = mechaniky FDD0-FDD3 řadiče FDC (porty 0xD8 - 0xDF), 4-7 = mechaniky FDD0-FDD3 sekundárního řadiče FDC1 (porty 0x58 - 0x5F, musí být připojený). Disk z `.ini` ve stejné mechanice nahradí a cesta se do `.ini` uloží stejně jako při vložení z menu (pokud nepoužijete `--no-save-ini`). Chybějící soubor, číslo mimo 0-7 nebo mechanika zadaná dvakrát = chyba a konec; odpojený FDC1 nebo obraz, který nejde otevřít, = chyba (v `--headless` konec s kódem 3, v okně pauza). Viz [devices/fdc.md](devices/fdc.md). |
 | `--fdd0` .. `--fdd7` | `<filepath>` | Totéž co `--fdd <N>=<filepath>` pro mechaniku 0-7. |
@@ -280,6 +281,26 @@ hodnotu na všechny 4 subsystémy najednou. Per-subsystém option
 vyplní pouze ty subsystémy, kde uživatel per-subsys option nepředal.
 
 
+## Overlay menu
+
+Klávesa `F10` (nebo `Alt` + levé tlačítko myši nad obrazem, nebo položka
+**Overlay Menu...** klasického menu) otevře
+celoobrazovkové menu nad obrazem emulátoru; `F10` nebo `Esc` ho zavře. Při
+otevření se emulace zastaví a při zavření se vrátí do stavu před otevřením.
+Šest tabů (číslice `1` až `6`): Media (diskety, kazeta, Quick Disk, naposledy
+vložená média), Machine, Display, Sound, Input a Capture. Klasické menu na
+pravé tlačítko myši funguje dál; nad otevřeným overlay menu pravé tlačítko
+menu zavře a klasické menu otevře. Podrobnosti viz
+[`overlay-menu.md`](overlay-menu.md).
+
+## Kazetofon (Virtual CMT)
+
+HW & Devices -> CMT -> Show Virtual CMT (`Alt + C`) otevře virtuální
+kazetofon: pásky TMZ, TZX, MZF, MZT, TAP a WAV, přehrávání skutečného signálu
+nebo okamžité nahrání přes CMT hack, nahrávání toho, co počítač ukládá,
+uložení pásky a programu do souboru, úpravy pásky a hledání programů
+v nahrávkách WAV. Podrobnosti viz [`devices/cmt.md`](devices/cmt.md).
+
 ## Screenshoty
 
 Tools -> Screenshot -> Save Screenshot (`Alt + F`) uloží PNG obrazu
@@ -287,6 +308,65 @@ zobrazeného v okně; oblast (s borderem nebo bez) a měřítko (nativní body n
 1x až 4x okna) se nastavují v Settings... Record Changed Frames
 (`Alt + Shift + F`) ukládá každý změněný emulovaný snímek pro hledání chyb
 v animacích. Podrobnosti viz [`screenshots.md`](screenshots.md).
+
+## Zvuk
+
+Interface -> Audio... otevře okno Audio Mixer s hlasitostí reproduktoru (CTC0)
+a kanálů PSG. Volba **Hardware output filter** (výchozí zapnuto, v INI
+`[AUDIO] output_filter`) zapíná dolní propust, kterou má skutečný MZ-800 mezi
+zvukovým čipem a zesilovačem (první řád, zlom 346 Hz při hlasitosti na
+maximum): zvuk je tlumenější, jako z reproduktoru počítače. Vypnutá volba
+dává dřívější, jasnější zvuk emulátoru. Přepnout jde kdykoli za běhu a platí
+i pro záznam zvuku a videa.
+
+Úbytek hlasitosti za propustí emulátor dorovnává, jako to na skutečném
+počítači dělá zesilovač: se zapnutou propustí o 8 dB, s vypnutou
+(a v emulátorech MZ-700) o 4 dB. Tón 440 Hz je tak v obou stavech stejně
+hlasitý; hluboké tóny jsou se zapnutou propustí o 4 dB silnější, vysoké
+slabší. Poměry mezi zdroji (reproduktor proti PSG) dorovnání nemění. Špičky
+nad 0,7 plného rozsahu se měkce stlačují, takže ani všechny zdroje naplno
+výstup tvrdě neoříznou; pod touto mezí je výstup přesně lineární. Dorovnání
+je volba emulátoru, ne změřená hodnota: hlasitost skutečného počítače určuje
+knoflík hlasitosti.
+
+Indikátory v okně Audio Mixer ukazují špičku: kanál hrající naplno
+s hlasitostí 0 dB rozsvítí celý svůj indikátor, stálá úroveň (není slyšet)
+nic. Svislý indikátor vpravo ukazuje špičku celého výstupu před hlavní
+hlasitostí a ztlumením; rozsvícené horní diody znamenají, že se špičky
+stlačují.
+
+Reproduktor (CTC0, pípání, hudba přes 8253 a signál kazety) je jako na
+skutečném počítači vázaný střídavě: stálá úroveň do necelé sekundy dozní.
+Stejně doznívá stálá úroveň celého výstupu (MZ-800 a MZ-1500): za zvukovým
+čipem je v sérii kondenzátor, časová konstanta 0,57 s je spočtená ze schématu
+a měření osciloskopem jí odpovídá (0,55 s, rozsah 0,44 až 0,69 s). Když počítač
+mlčí, je výstup do několika sekund na nule.
+
+Hlavní hlasitost poslechu (**Master volume**) a ztlumení (**Mute**) jsou
+v overlay menu na tabu Sound (`F10`, viz [`overlay-menu.md`](overlay-menu.md))
+a v okně Audio Mixer. Hlavní hlasitost má rozsah 0 až 200 % (výchozí 100 %,
+na posuvníku vyznačených; dvojklik je vrátí): do 100 % ubírá, nad 100 %
+přidává až 6 dB a zvuk přitom prochází měkkým omezovačem, takže se špičky
+nezaříznou. Emulace při otevřeném overlay menu stojí; aby byly
+změny slyšet hned, zapněte na tabu Sound přepínač **Listen**. Uplatní se až na zvukovém výstupu emulátoru, takže
+hlasitosti kanálů nemění a do zvuku videa ani do zachycení zvuku se
+nepromítají. Hlavní hlasitost se ukládá (INI `[AUDIO] volume_master`
+pro 0 až 100 % a `volume_master_boost` pro procenta nad 100 %, v souboru
+šestnáctkově `0x00` až `0x64`);
+ztlumení se neukládá, emulátor se vždy spustí neztlumený. Zapnuté ztlumení
+ukazuje značka **MUTED** v titulku hlavního okna, za běhu i při pauze.
+
+Jak moc je zvukový výstup podložený:
+
+- **MZ-800** - změřený na skutečném počítači (úrovně, propust, vazba reproduktoru).
+- **MZ-1500** - odvozený z MZ-800, neměřený.
+- **MZ-700** - odhadnutý podle schématu, bez měření. Podle schématu MZ-700 žádnou
+  propust před zesilovačem nemá, proto v emulátorech MZ-700 volba Hardware output
+  filter není (ani v okně, ani v INI) a zvuk používá dřívější filtry emulátoru.
+  Reproduktor je tam na skutečném počítači připojený stejnosměrně; emulátor
+  stálou úroveň reproduktoru přesto nechává doznít, protože zvuková karta ji
+  nepřenese a při skocích by lupalo (kondenzátor v sérii jako MZ-800 tam není). Hlasitost reproduktoru je stejná jako u MZ-800
+  v režimu MZ-700. MZ-800 v režimu MZ-700 používá zvukovou cestu MZ-800.
 
 ## Zachycení zvuku
 

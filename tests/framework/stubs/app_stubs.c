@@ -200,6 +200,22 @@ void baseui_show_message(bool is_error, char *format, ...)
     va_end(args);
 }
 
+void baseui_show_message_tr(bool is_error, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    fprintf(stderr, "[stub] baseui_show_message_tr(%d): ", is_error ? 1 : 0);
+    vfprintf(stderr, format, args);
+    fputc(10, stderr);
+    va_end(args);
+}
+
+/** @brief Stub baseui_translate(): testy běží bez překladu, vrací msgid. */
+const char *baseui_translate(const char *msgid)
+{
+    return msgid;
+}
+
 void baseui_show_error_message(char *format, ...)
 {
     va_list args;
@@ -210,30 +226,34 @@ void baseui_show_error_message(char *format, ...)
     va_end(args);
 }
 
-int baseui_cmt_check_mzf_filesize(const char *filename, unsigned int expected_size, unsigned int real_size)
+/** @brief Počet volání baseui_cmt_check_mzf_filesize() (testy kontroly velikosti MZF). */
+int g_stub_cmt_mzfsize_check_calls = 0;
+
+/**
+ * @brief Stub: kontrola velikosti MZF (v GUI dialog opravy) jen počítá volání.
+ * @param filename Soubor. @param valid_size Velikost podle hlavičky.
+ */
+void baseui_cmt_check_mzf_filesize(const char *filename, int valid_size)
 {
     (void)filename;
-    (void)expected_size;
-    (void)real_size;
-    return 0; /* přijmout jak je */
+    (void)valid_size;
+    g_stub_cmt_mzfsize_check_calls++;
 }
 
 /* ================================================================
  * imgui stubs — funkce z ImGui UI které jádro referencuje
  * ================================================================ */
 
-void imgui_cmt_tape_update_filelist(void)
-{
-    /* nic */
-}
-
 void imgui_cmt_fix_mzfsize_popup_activate(void)
 {
     /* nic */
 }
 
-void imgui_message_vprintf(int type, const char *fmt, va_list args)
+/* weak: UI test, který linkuje skutečné okno zpráv (message_window.cpp),
+ * ho tím nahradí bez kolize symbolů */
+__attribute__((weak)) void imgui_message_vprintf(int type, const char *fmt, va_list args)
 {
+
     (void)type;
     /* v testech přepošleme na stderr */
     vfprintf(stderr, fmt, args);

@@ -18,3 +18,31 @@ mz_add_test(audio_analysis
     LABELS   "standalone;audio"
 )
 target_include_directories(test_audio_analysis PRIVATE ${CMAKE_SOURCE_DIR}/src/emulator)
+
+# Střídavá vazba CTC0 vedená emulátorem v emulovaném čase (audio.c), echo
+# kazety stejným kanálem.
+mz_add_test(audio_ctc0_ac
+    TYPE     EMU
+    SOURCES  test_audio_ctc0_ac.c
+    LABELS   "emu;audio"
+)
+
+# CTC0 v režimu 3 s děličem 2 (554 kHz): do zvukového logu jde místo hran
+# stálá úroveň 0,64 maskovaná PC0 (změřeno na MZ-800); přechody na jiný dělič,
+# brána, řídicí slovo, echo kazety, stav po načtení snapshotu.
+mz_add_test(audio_ctc0_div2
+    TYPE     EMU
+    SOURCES  test_audio_ctc0_div2.c
+    LABELS   "emu;audio"
+)
+
+# Hlavní hlasitost a ztlumení poslechu (iface_audio_apply_master()): výchozí
+# stav nechá blok bitově shodný, ztlumení dá ticho, zisk 0,5 poloviční
+# amplitudu, změna je plynulý přechod přes jeden blok; meze nastavení,
+# hlasitost nad 100 % s měkkým omezovačem, rozklad do INI klíčů. Indikace
+# úrovní podle špičky a dorovnání hlasitosti v mixu (iface_audio_mix_block()).
+mz_add_test(audio_master
+    TYPE     EMU
+    SOURCES  test_audio_master.c
+    LABELS   "emu;audio"
+)

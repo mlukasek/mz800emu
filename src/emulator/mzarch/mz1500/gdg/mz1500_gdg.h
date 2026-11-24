@@ -155,6 +155,43 @@ extern "C"
 
 #define gdg_compute_total_ticks(now_ticks) (now_ticks + ((uint64_t)g_gdg.total_elapsed.screens * VIDEO_SCREEN_TICKS))
 #define gdg_get_total_ticks() gdg_compute_total_ticks(g_gdg.total_elapsed.ticks)
+
+/**
+ * @brief Délka právě končícího snímku v pxCLK.
+ *
+ * Na této platformě konstanta; na MZ-800 ji zkracuje bit CKSW
+ * (mz800_gdg.h). O tuto hodnotu posouvá konec snímku události časované od
+ * začátku snímku (CTC0, PIO-Z80, 20ms časovač).
+ */
+#define gdg_get_ending_frame_ticks() ( VIDEO_SCREEN_TICKS )
+
+/**
+ * @brief Tiky od poslední sestupné hrany skutečného HSYNC (CLK1 čítače 8253).
+ *
+ * @param ticks Tiky od začátku snímku.
+ * @return Počet tiků od hrany, 0 až VIDEO_SCREEN_WIDTH - 1.
+ */
+#define gdg_get_ticks_since_hsync_fall(ticks) \
+    ( ( VIDEO_GET_SCREEN_COL(ticks) + VIDEO_SCREEN_WIDTH - VIDEO_REAL_HSYNC_START_COLUMN ) % VIDEO_SCREEN_WIDTH )
+
+/**
+ * @brief Čas události aktuálního řádku v tikách od začátku snímku.
+ *
+ * @param column Sloupec události z tabulky g_gdgevent.
+ * @return Tiky od začátku snímku (řádek má pevnou délku).
+ */
+#define gdg_get_event_ticks(column) ( g_gdg.beam_row * VIDEO_SCREEN_WIDTH + (column) )
+
+/** @brief Sloupec paprsku v aktuálním čase GDG (řádek má pevnou délku). */
+#define gdg_get_beam_col() ( VIDEO_GET_SCREEN_COL(g_gdg.total_elapsed.ticks) )
+
+/**
+ * @brief Virtuální pozice paprsku (řádek * VIDEO_SCREEN_WIDTH + sloupec).
+ *
+ * Na této platformě má řádek pevnou délku, pozice je rovna tikům od začátku
+ * snímku. Na MZ-800 ji mění bit CKSW (mz800_gdg.h).
+ */
+#define gdg_get_beam_vpos(ticks) ( ticks )
 /**
  * @brief Okamžik právě probíhajícího přístupu na sběrnici (IORQ, MMIO) v tikách GDG.
  *
@@ -176,7 +213,20 @@ extern "C"
  */
 #define gdg_get_insigeop_ticks() (g_gdg.total_elapsed.ticks)
 
-#define gdg_proximate_clk1m1_event(now_ticks) (now_ticks + (GDGCLK_CTC0_DIVIDER - (gdg_compute_total_ticks(now_ticks) % GDGCLK_CTC0_DIVIDER)))
+/**
+ * @brief Fáze sestupné hrany CLK0 obvodu 8253 vůči času emulátoru (viz MZ-800).
+ *
+ * Na této platformě neměřeno [neověřeno]: hrana tam, kde
+ * gdg_compute_total_ticks() % GDGCLK_CTC0_DIVIDER == 0 (stav před opravou
+ * na MZ-800). Rozhodne měření U21 (mz800-knowledge hw-measurement/vysledky.md).
+ */
+#define GDG_CTC0_CLK_PHASE_TICKS 0u
+
+/**
+ * @brief Čas první sestupné hrany CLK0 ostře po @p now_ticks (tiky snímku).
+ * @param now_ticks Tiky od začátku snímku.
+ */
+#define gdg_proximate_clk1m1_event(now_ticks) (now_ticks + (GDGCLK_CTC0_DIVIDER - ((gdg_compute_total_ticks(now_ticks) + GDGCLK_CTC0_DIVIDER - GDG_CTC0_CLK_PHASE_TICKS) % GDGCLK_CTC0_DIVIDER)))
 #define gdg_get_event_pointer() (&g_gdg.event)
 #define gdg_get_regct53g7() (g_gdg.regct53g7)
 

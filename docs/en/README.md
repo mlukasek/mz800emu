@@ -69,10 +69,11 @@ are rejected with an error - use `--help` for a generated listing.
 | `--help` | - | Print the option list and exit. |
 | `--version` | - | Print the version, revision, build date, source origin (branch, commit, uncommitted changes, when available), compiler, compiled-in features, SDL and GLib versions and the host OS, then exit. Works in every binary (`mz800emu`, `mz700emu-pal`, `mz700emu-ntsc`, `mz1500emu`) and with `--mcp-pipe`; neither the emulator nor a window is started. |
 | `--console` | - | Windows only: allocate a console window for stdout/stderr. |
-| `--run-mzf` | `<filepath>` | Automatically load and run the given MZF file after the emulator boots. |
-| `--cmt` | `<filepath>` | Insert a tape into the virtual cassette recorder at startup: `.mzf`, `.m12`, `.mzt`, `.tap`, `.wav` or `.wave`. If the CMT hack is on, it is turned off for this session only (the `.ini` keeps the original setting). In the window, the Virtual CMT window opens. Missing file or unknown extension = error and exit. |
-| `--cmt-play` | - | With `--cmt`: press PLAY after inserting the tape. When the emulator boots through the ROM, the ROM stops the tape motor during its startup, so the tape waits in PLAY + PAUSE; it plays at once only together with `--run-mzf`. |
-| `--cmt-play-pause` | - | With `--cmt`: the tape waits in PLAY + PAUSE and starts moving when the ROM or the program turns the cassette motor on (e.g. `LOAD` in BASIC, loading from the monitor). Cannot be combined with `--cmt-play`. |
+| `--run-mzf` | `<filepath>` | Automatically load and run the given MZF file after the emulator boots. The program starts as if the ROM had loaded it from the tape, without running the ROM loader; register BC holds the device code set in the menu HW & Devices > CMT > CMT Options > Device for Direct MZF Start (default CMT). |
+| `--run-mzf-device` | `<cmt\|fd\|qd\|rd\|value>` | With `--run-mzf`: the device code in register BC, as if the program was loaded from that device: `cmt` (0100h, on MZ-700 0000h - the value the ROM leaves after a tape load), `fd` (0200h), `qd` (0300h), `rd` or `sram` (0000h), or a number 0-65535 (`512`, `0x0200` or `0200h`; a decimal number is written without leading zeros (`0200` is an error, write `0x0200` or `0200h`)). Some programs, for example the BASIC 1Z-016, choose their default device by it. Applies to this start only; the setting in the menu and in the INI file is kept. An invalid value or a missing `--run-mzf` is an error. |
+| `--cmt` | `<filepath>` | Insert a tape into the virtual cassette recorder at startup: `.tmz`, `.tzx`, `.mzf`, `.m12`, `.mzt`, `.tap`, `.wav` or `.wave` (see [devices/cmt.md](devices/cmt.md)). If the CMT hack is on, it is turned off for this session only (the `.ini` keeps the original setting). In the window, the Virtual CMT window opens. Missing file or unknown extension = error and exit. |
+| `--cmt-play` | - | With `--cmt`: press PLAY after inserting the tape. When the emulator boots through the ROM, the ROM stops the tape motor during its startup, so the tape waits in PLAY for the motor (Waiting for motor); it plays at once only together with `--run-mzf`. |
+| `--cmt-play-pause` | - | With `--cmt`: the tape waits in PLAY for the motor (Waiting for motor) and starts moving when the ROM or the program turns the cassette motor on (e.g. `LOAD` in BASIC, loading from the monitor). Cannot be combined with `--cmt-play`. |
 | `--cmt-boot` | - | MZ-800 only, with `--cmt`: like `--cmt-play-pause`, and the emulator holds the C key from start until the ROM turns the motor on, so the boot menu loads the program from the tape. Works in both positions of the mode switch. Cannot be combined with `--run-mzf` or `--cmt-play`. |
 | `--fdd` | `<N>=<filepath>` | Insert a DSK image into floppy drive N at startup; the option can be repeated. N 0-3 = drives FDD0-FDD3 of the FDC controller (ports 0xD8 - 0xDF), 4-7 = drives FDD0-FDD3 of the secondary FDC1 controller (ports 0x58 - 0x5F, must be connected). It replaces the disk from the `.ini` in the same drive and the path is saved to the `.ini` like a disk inserted from the menu (unless you use `--no-save-ini`). A missing file, a number outside 0-7 or a drive given twice = error and exit; a disconnected FDC1 or an image that cannot be opened = error (in `--headless` exit with code 3, in the window a pause). See [devices/fdc.md](devices/fdc.md). |
 | `--fdd0` .. `--fdd7` | `<filepath>` | Same as `--fdd <N>=<filepath>` for drive 0-7. |
@@ -268,6 +269,26 @@ mz800emu --cputrack-mode always \
 ```
 
 
+## Overlay menu
+
+The `F10` key (or `Alt` + left mouse button over the picture, or the
+**Overlay Menu...** item of the classic menu) opens a
+full-screen menu over the emulator picture; `F10` or `Esc` closes it. Opening
+the menu pauses the emulation and closing it restores the state from before.
+Six tabs (digits `1` to `6`): Media (floppy disks, cassette, Quick Disk,
+recently inserted media), Machine, Display, Sound, Input and Capture. The
+classic menu on the right mouse button works as before; over the open
+overlay menu the right mouse button closes it and opens the classic menu.
+For details see [`overlay-menu.md`](overlay-menu.md).
+
+## Cassette recorder (Virtual CMT)
+
+HW & Devices -> CMT -> Show Virtual CMT (`Alt + C`) opens the virtual
+cassette recorder: TMZ, TZX, MZF, MZT, TAP and WAV tapes, playing the real
+signal or loading at once through the CMT hack, recording what the computer
+saves, saving the tape and programs to files, editing the tape and finding
+programs in WAV recordings. For details see [`devices/cmt.md`](devices/cmt.md).
+
 ## Screenshots
 
 Tools -> Screenshot -> Save Screenshot (`Alt + F`) saves a PNG of the picture
@@ -275,6 +296,73 @@ shown in the window; area (with or without the border) and scale (native dots
 or 1x to 4x of the window) are set in Settings... Record Changed Frames
 (`Alt + Shift + F`) saves every changed emulated frame, for finding animation
 bugs. For details see [`screenshots.md`](screenshots.md).
+
+## Sound
+
+Interface -> Audio... opens the Audio Mixer window with the volume of the
+speaker (CTC0) and of the PSG channels. The option **Hardware output filter**
+(on by default, `[AUDIO] output_filter` in the INI file) turns on the low-pass
+filter a real MZ-800 has between the sound chip and the amplifier (first
+order, 346 Hz corner with the volume at maximum): the sound is duller, like
+from the computer's own speaker. With the option off you get the previous,
+brighter sound of the emulator. It can be switched at any time while running
+and it also applies to the audio capture and the video recording.
+
+The emulator makes up for the loss of volume behind the filter, as the
+amplifier does on the real computer: by 8 dB with the filter on, by 4 dB with
+it off (and in the MZ-700 emulators). A 440 Hz tone is therefore equally loud
+in both states; low tones are 4 dB stronger with the filter on, high tones
+weaker. The make-up gain does not change the ratios between the sources (the
+speaker against the PSG). Peaks above 0.7 of full scale are softly
+compressed, so even all sources at full level do not clip the output hard;
+below that the output is exactly linear. The make-up gain is a choice of the
+emulator, not a measured value: the loudness of the real computer is set by
+its volume knob.
+
+The indicators in the Audio Mixer window show the peak: a channel playing at
+full level with its volume at 0 dB lights its whole indicator, a constant
+level (which is not audible) lights nothing. The vertical indicator on the
+right shows the peak of the whole output before the master volume and mute;
+lit top LEDs mean that the peaks are being compressed.
+
+The speaker (CTC0, beeps, music
+through the 8253 and the tape signal) is AC coupled as on the real computer:
+a constant level fades out within about a second. A constant level of the
+whole output fades out the same way (MZ-800 and MZ-1500): there is a capacitor
+in series behind the sound chip, the time constant of 0.57 s is calculated
+from the schematic and oscilloscope measurements agree (0.55 s, range 0.44 to
+0.69 s). When the computer is silent the output reaches zero within a few
+seconds.
+
+The master listening volume (**Master volume**) and **Mute** are in the
+overlay menu on the Sound tab (`F10`, see [`overlay-menu.md`](overlay-menu.md))
+and in the Audio Mixer window. The master volume has a range of 0 to 200 %
+(100 % by default, marked on the slider; a double-click sets it back): up to
+100 % it attenuates, above 100 % it boosts by up to 6 dB and the sound then
+goes through a soft limiter, so the peaks are not cut off. The emulation is
+paused while the overlay menu is open; to hear the changes at once, turn on the **Listen** switch on the
+Sound tab. They are applied only at the sound output of
+the emulator, so they do not change the channel volumes and do not get into
+the sound of a video or into the audio capture. The master volume is saved
+(`[AUDIO] volume_master` in the INI file for 0 to 100 % and
+`volume_master_boost` for the per cent above 100 %, written in hexadecimal
+in the file, `0x00` to `0x64`); mute is not saved, the emulator
+always starts unmuted. While muted, the title of the main window carries the
+mark **MUTED**, both while running and while paused.
+
+How well founded the sound output is:
+
+- **MZ-800** - measured on a real computer (levels, filter, speaker coupling).
+- **MZ-1500** - derived from the MZ-800, not measured.
+- **MZ-700** - estimated from the schematic, without measurements. According to
+  the schematic the MZ-700 has no filter in front of the amplifier, so the
+  MZ-700 emulators do not have the option Hardware output filter (neither in
+  the window nor in the INI file) and the sound uses the previous filters of
+  the emulator. On the real computer the speaker is DC coupled; the emulator
+  still lets a constant speaker level fade out, because a sound card cannot
+  reproduce it and steps would click (there is no series capacitor as in the
+  MZ-800). The speaker volume is the same as for an MZ-800 in
+  MZ-700 mode. An MZ-800 in MZ-700 mode uses the sound path of the MZ-800.
 
 ## Audio capture
 

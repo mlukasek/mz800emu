@@ -9,6 +9,23 @@ carries an `error` string (raw JSONL: `"success": false`, `"error"`).
 The error text tells you whether the emulator **executed** the command,
 which decides whether retrying is safe.
 
+Through the bundled MCP server there are two shapes (as observed with the
+MCP Python package 1.27; the argument check is done by that package, not
+by the emulator, so another version may differ):
+
+- **The tool ran and failed**: a normal result (`isError` false) whose
+  text is the JSON `{"error": "..."}`; `structuredContent` is
+  `{"result": "<the same JSON as a string>"}` (every tool's output is
+  one string), so parse the text or the `result` string, not the object.
+- **An argument cannot be converted to the tool's parameter type** (for
+  example `1.5` or `"abc"` where an integer is expected, a missing
+  required argument): the MCP library refuses the call before the tool
+  runs, with `isError` true and a plain text message `Error executing
+  tool <name>: ... validation error ...`, no JSON. The check is lenient:
+  it converts what it can (`true` to 1, `"2"` to 2, `2.0` to 2) and the
+  tool then runs with the converted value, so pass the exact JSON
+  types.
+
 ## How a request is processed
 
 Most tools are forwarded to the emulator thread through an internal
@@ -29,10 +46,12 @@ large data) get a much longer limit of **10 minutes** instead of 10 s:
 `snapshot_load`, `snapshot_load_buffer`, `profiler_export`, `cdl_export`,
 all `videorec_*` tools, `media_load_mzf`, `media_run_mzf`, `media_load_binary`,
 `media_insert`, `media_eject`, `cmt_open`, `cmt_record`,
+`cmt_tape_import`, `cmt_export_tape`, `cmt_tape_analyze`,
 `get_frame_screenshot`, `screenshot_save_to_file` (and the wrapper tools
 built on them). The 10 s queue limit applies to them as well. A client
 with its own shorter timeout (the bundled Python wrapper waits 30 s per
-request) may give up earlier, although the command still completes.
+request, 640 s for `emu_cmt_tape_analyze`) may give up earlier, although
+the command still completes.
 
 Pick-up is normally a few ms, but host-dependent stalls of the emulator
 thread of up to ~1-2 s have been observed. They are not an error on
@@ -91,6 +110,38 @@ compatibility and does **not** mean the ID is unknown.
   `emu_run_until_event` end after at most 20 s of wall-clock time with
   `time_limited: true`. See `emulator://docs/run_control`.
 - Send the next request only after the previous response arrived.
+- `emu_snapshot_load` and `emu_snapshot_load_buffer` do not touch the
+  floppy drives or the Quick Disk drive: every drive
+  keeps the image that is inserted (file, write protection, unsaved
+  changes) and an empty drive stays empty, whatever was inserted when
+  the snapshot was saved. Only the controller state is restored (for the
+  Quick Disk the SIO chip and the head position; disk presence and write
+  protection seen by the machine follow the inserted medium). When
+  the inserted disks differ from the snapshot, the load still succeeds;
+  the difference is reported in a GUI message and on the emulator's
+  stderr ("Snapshot [media]: the snapshot was saved with different disks,
+  the inserted disks were kept:" and one line per drive, `FDD n: <name
+  in the snapshot> (now: <name now or empty>)` or `Quick Disk: <name in
+  the snapshot> (now: <name now or empty>)`), not in the tool result.
+  A snapshot saved with another kind of Quick Disk drive (image or
+  Unicard versus virtual directory) switches the drive kind for the run:
+  the inserted medium is closed (unsaved changes are saved to its file)
+  and the medium configured for the new kind is inserted.
+  To reproduce a state exactly, insert the same images with
+  `emu_media_insert` before the load and check `emu_media_state`. The
+  tape is different: a snapshot load reopens it, see
+  `emulator://docs/cmt_workflow`.
+- `emu_media_insert` of a disk image whose file is already inserted in
+  another floppy drive succeeds, but the image is inserted
+  **write-protected** and the result carries `warning` ("The image is
+  already inserted in FDD n. It was inserted write-protected here to
+  keep the image file safe."; n = 0-3 for FDC0, 4-7 for FDC1). Only one
+  drive may write to one image file: the first one that holds it.
+  `emu_media_state` shows `ro: true` for the second slot and writes of
+  the emulated program to that drive end with a write-protect error. The
+  protection stays until the image leaves that drive: to write through
+  the second drive, `emu_media_eject` the image from both drives and
+  insert it into the second one only, or insert a copy of the file.
 - Bundled Python wrapper: any tool result may carry `restarted: true`
   and `restart_reason` (a failed call: error text ending with
   `[restarted: true; ...]`). It means the previous backend ended

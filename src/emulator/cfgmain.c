@@ -44,6 +44,7 @@
 #include "audio_capture.h"
 #include "i18n_lang.h"
 #include "baseui/baseui_fchooser_lastdir.h"
+#include "recent_media/recent_media.h"
 #ifdef MZ800EMU_CFG_MCP_TCP_ENABLED
 #include "mcp/mcp_config.h"
 #endif
@@ -52,6 +53,14 @@ extern SdlApp *g_sdlapp;
 
 struct st_CFGROOT *g_cfgmain;
 bool g_cfgmain_ini_file_exists = false;
+
+/** @brief true = načtené INI má `config_version = 1.0` (cfgmain_ini_has_legacy_rom_keywords()). */
+static bool s_cfgmain_legacy_rom_keywords = false;
+
+bool cfgmain_ini_has_legacy_rom_keywords(void)
+{
+    return s_cfgmain_legacy_rom_keywords;
+}
 const char *g_cfgmail_filename = NULL;
 
 const char *g_build_date = __DATE__; // Formát: "MMM DD YYYY"
@@ -139,7 +148,7 @@ void cfgmain_savecfg(void *m, void *data)
     cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "This_is_Config_File_for"), str->str);
     g_string_free(str, TRUE);
 
-    cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "config_version"), "1.0");
+    cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "config_version"), CFGMAIN_CONFIG_VERSION);
     cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "emulator_version"), CFGMAIN_EMULATOR_VERSION_TEXT);
     cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "emulator_build_time"), cfgmain_get_build_datetime());
     cfgelement_set_text_value(cfgmodule_get_element_by_name((CFGMOD *)m, "config_creation_timestamp"), cfgmain_create_timestamp());
@@ -176,6 +185,14 @@ void cfgmain_init(void)
     if (EXIT_SUCCESS == cfgmodule_parse(cmod))
     {
         g_cfgmain_ini_file_exists = true;
+        /* verze formátu načteného INI (savecfg ji při ukládání přepíše aktuální) */
+        const char *cfg_version = cfgelement_get_text_value(cfgmodule_get_element_by_name(cmod, "config_version"));
+        /* Posun jmen ROM zapisoval až kód s dynamickou tabulkou ROM (od
+         * 2026-03-08); starší verze psaly formát 1.0 se správnými jmény. Čas
+         * sestavení je "RRRR-MM-DD hh:mm:ss", porovnání řetězců stačí. */
+        const char *cfg_build = cfgelement_get_text_value(cfgmodule_get_element_by_name(cmod, "emulator_build_time"));
+        s_cfgmain_legacy_rom_keywords = (cfg_version && (0 == strcmp(cfg_version, "1.0"))
+                                         && cfg_build && (strcmp(cfg_build, CFGMAIN_LEGACY_ROM_KEYWORDS_SINCE) >= 0));
         printf("INFO: restore configuration from %s\n", g_cfgmail_filename);
     }
     else
@@ -197,6 +214,20 @@ void cfgmain_init(void)
 
     /* Registrace paměti adresářů dialogu pro výběr souboru (sekce [FILECHOOSER]) */
     baseui_fchooser_lastdir_config_init();
+
+    /* Registrace historie naposledy vložených médií (sekce [RECENT_MEDIA]);
+     * musí být načtená dřív, než zařízení při startu vloží média z příkazové řádky */
+    recent_media_config_init();
+
+    /* Běh bez okna (--headless; --mcp-pipe si --headless doplňuje sám,
+     * mcp_pipe_main()): média z příkazové řádky nevkládá uživatel u okna,
+     * ale skript. Zápis do historie proto zůstává pozastavený po celý běh
+     * (záměrně bez párového recent_media_resume()), aby skriptované běhy
+     * neplnily uživateli pruh Recent media. Načtená historie se nemění. */
+    if (sdlapp_option_present("--headless"))
+    {
+        recent_media_suspend();
+    };
 
     /* Registrace jazykové konfigurace */
     i18n_lang_config_init();

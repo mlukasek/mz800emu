@@ -26,7 +26,7 @@ https://sourceforge.net/projects/mz800emu/
   - SN76489AN PSG
 - Precise internal signal timing
 - Wide range of supported peripherals:
-  - Cassette (CMT): MZF, MZT, TAP, WAV
+  - Cassette (CMT): TMZ, TZX, MZF, MZT, TAP, WAV; recording, saving, tape editing, finding programs in WAV recordings
   - Floppy disk controller (FDC WD279x)
   - Quick Disk
   - RAM disk, memory extensions
@@ -72,6 +72,9 @@ Quick build (when dependencies are already installed):
 cmake -S . -B build -G Ninja
 cmake --build build
 ```
+
+The binaries are created in `build/build-<target>/` (for example
+`build/build-mz800emu/mz800emu`) and can be started from there.
 
 ## Documentation
 

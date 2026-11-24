@@ -13,8 +13,11 @@
  *      VSYNC
  *      LAST_VISIBLE_PIXEL
  *
- * @param
- * @return
+ * Čas události počítá gdg_get_event_ticks() ze sloupce v tabulce
+ * g_gdgevent (v řádku zkráceném bitem CKSW jsou pozdní události dřív).
+ *
+ * @pre g_gdg.beam_row, frame_short_ticks a row_shrink odpovídají řádku,
+ *      pro který se událost plánuje.
  */
 static inline void gdg_event_set_next(void)
 {
@@ -34,7 +37,7 @@ static inline void gdg_event_set_next(void)
             ((g_gdgevent[g_gdg.event.event_name].start_row + g_gdgevent[g_gdg.event.event_name].num_rows - 1) >= g_gdg.beam_row))
         {
 
-            g_gdg.event.ticks = g_gdg.beam_row * VIDEO_SCREEN_WIDTH + g_gdgevent[g_gdg.event.event_name].event_column;
+            g_gdg.event.ticks = gdg_get_event_ticks(g_gdgevent[g_gdg.event.event_name].event_column);
 
             break;
         };
@@ -103,6 +106,22 @@ static inline void gdg_process_events(void)
 
     case MZEVENT_GDG_HBLN_START:
         g_gdg.hbln = HBLN_ACTIVE;
+        /* Čítač sloupců GDG si bit CKSW načítá jednou za řádek, na sestupné
+         * hraně HBLN (netlist: 975 až 976 pxCLK po sestupné hraně /HSYN,
+         * HBLN padá v 976). Od této chvíle je délka řádku daná.
+         *
+         * Emulátor zná u zápisu čas konce M-cyklu, klopný obvod CKSW se
+         * překlápí GDG_CKSW_WR_EDGE_TICKS dřív. Zápis s koncem M-cyklu těsně
+         * za touto událostí (sloupce 790 a 791) proto zkrácení tohoto řádku
+         * ještě změní: řeší to gdg_cksw_written() v mz800_gdg.c. Poloha
+         * události vůči netlistu stojí na kotvě HBLN (sloupec 790 = 976 CLK0
+         * po sestupné hraně /HSYN). Měření na MZ-800 (2026-11-21) s touto
+         * kotvou souhlasí: border na výstupu RGBI začíná 186 px po hraně
+         * /HSYNC (sloupec 0) a hranice zápisu vychází na stejném místě
+         * s přesností půl pixelu. */
+        g_gdg.row_shrink = g_gdg.cksw * GDG_CKSW_ROW_SHRINK;
+        /* Čítač adresy řádku pro další řádek podle DMD v tomto okamžiku. */
+        gdg_row_counter_advance();
 #ifdef MZ800EMU_CFG_DEBUGGER_ENABLED
         /* trace-suite hwlog: HBLN start edge (decimovaný). */
         if ( TEST_TRACE_HWLOG_DISPATCH ) {
@@ -258,8 +277,9 @@ static inline void gdg_process_events(void)
         }
 #endif
         g_gdg.tempo_divider++;
-        /* Na mem MZ800 ma TEMPO pravdepodobne cca 34 Hz - tedy od oka :) */
-        if (g_gdg.tempo_divider == 229)
+        /* TEMPO se na MZ-800 překlápí po 228 řádcích (34,24 Hz): změřeno
+         * analyzátorem, 227,960 řádku (emu-experiments gdg-meas, druhé měření). */
+        if (g_gdg.tempo_divider >= g_gdg.tempo_rows)
         {
             g_gdg.tempo_divider = 0;
             g_gdg.tempo++;
@@ -280,10 +300,20 @@ static inline void gdg_process_events(void)
         };
 
         g_gdg.screen_need_update_from = 0;
+        g_gdg.canvas_split_x = 0;
+        g_gdg.mz700_skip_row = 0;
+        framebuffer_row_state_reset();
+        gdg_geometry_row_start();
+
+        /* Řádek končí: jeho zkrácení (CKSW) přejde do součtu snímku, další
+         * řádek je do načtení bitu v HBLN_START veden jako nezkrácený. */
+        g_gdg.frame_short_ticks += g_gdg.row_shrink;
+        g_gdg.row_shrink = 0;
 
         if (g_gdg.beam_row < VIDEO_SCREEN_HEIGHT - 1)
         {
             g_gdg.beam_row++;
+            gdg_row_counter_enter_row();
         }
         else
         {
@@ -301,6 +331,7 @@ static inline void gdg_process_events(void)
             mz800_main_event_callback_screen_done();
 
             gdg_on_screen_done_event();
+            gdg_row_counter_enter_row();
 
 #ifdef MZ800EMU_CFG_DEBUGGER_ENABLED
             /* V1.5 fáze 2.2: HWE BP_EVENT_CURSOR edge-based fire.

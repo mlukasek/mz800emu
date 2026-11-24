@@ -116,6 +116,7 @@ function(mz_add_emulator target mzarch tvsys)
         src/emulator/snapshot
         src/emulator/videorec
         src/emulator/screenshot
+        src/emulator/recent_media
         src/emulator/mcp
     )
 
@@ -209,6 +210,23 @@ function(mz_add_emulator target mzarch tvsys)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/build-${target}
     )
 
+    # ---- Assety vedle binárky ----------------------------------------------
+    # Emulátor hledá ui_resources/, locale/ a certs/ v adresáři binárky.
+    # Target ${target}-assets je tam při každém buildu zpřístupní (odkaz,
+    # na Windows kopie - viz cmake/RuntimeAssets.cmake), takže binárka jde
+    # spustit přímo z build-${target}/ i bez Makefile wrapperu.
+    if(MZ_RUNTIME_ASSETS)
+        add_custom_target(${target}-assets
+            COMMAND ${CMAKE_COMMAND}
+                -DMZ_ASSETS_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DMZ_ASSETS_DEST_DIR=${CMAKE_BINARY_DIR}/build-${target}
+                -P ${CMAKE_SOURCE_DIR}/cmake/RuntimeAssets.cmake
+            COMMENT "Runtime assets for ${target}"
+            VERBATIM
+        )
+        add_dependencies(${target} ${target}-assets)
+    endif()
+
     # ---- FORCE_CONSOLE: na Windows GUI subsystem nahradíme za CONSOLE -----
     # Pokud MZ_FORCE_CONSOLE=ON, mz::sdl3 už má upravené libs bez -mwindows,
     # ale linker by mohl ještě default mít WIN32_EXECUTABLE. Necháme default
@@ -258,6 +276,7 @@ function(mz_add_pipe_emulator_disabled target mzarch tvsys)
         src/emulator/snapshot
         src/emulator/videorec
         src/emulator/screenshot
+        src/emulator/recent_media
         src/emulator/mcp
     )
     # Pro pipe target VŠECHNY src/emulator/mcp/ soubory zůstávají (vč.

@@ -142,8 +142,19 @@
  * na KONEC cmd_map[]) = 224 + 1 = 225.
  * bus-model doplnil get_bus_map a bus_peek (mapa vlastníků sběrnice,
  * peek s rezolucí, na KONEC cmd_map[]) = 225 + 2 = 227.
+ * Kazeta doplnila cmt_save, cmt_export_block a cmt_new_tape
+ * (uložení pásky, export bloku, nová páska, na KONEC cmd_map[]) = 227 + 3 = 230.
+ * Úpravy pásky doplnily cmt_tape_delete_blocks, cmt_tape_move_block,
+ * cmt_tape_import a cmt_export_tape (úpravy pásky a export celé pásky, na
+ * KONEC cmd_map[]) = 230 + 4 = 234.
+ * Nástroje nad páskou doplnily cmt_tape_analyze, cmt_tape_info, cmt_tape_check
+ * a cmt_tape_convert_block (analýza surového bloku, informace o pásce,
+ * kontrola pásky, převod profilu, na KONEC cmd_map[]) = 234 + 4 = 238.
+ * Kazeta jako okno Virtual CMT doplnila cmt_load_directly a cmt_tape_step
+ * (Load directly, krok po přehratelných blocích, na KONEC cmd_map[])
+ * = 238 + 2 = 240.
  */
-#define MCP_EXPECTED_CMD_COUNT 227
+#define MCP_EXPECTED_CMD_COUNT 240
 
 
 /* ====================================================================== */
@@ -4327,6 +4338,56 @@ void test_cmt_tape_block_speed_pulses(void) {
 }
 
 
+/**
+ * @brief cmt_load_directly, cmt_tape_step a alias block_id u cmt_export_block: přísné typy před dbgapi.
+ *
+ * Neplatné parametry (block_id jiného typu nebo záporné, direction mimo
+ * next / prev / start nebo jiného typu, block i block_id naráz) se odmítnou
+ * jako INVALID_PARAMS bez volání emulátoru; platné jdou na správný příkaz
+ * dbgapi.
+ */
+void test_cmt_load_directly_step_params(void) {
+    static const char *const bad[] = {
+        "{\"type\":\"request\",\"id\":1221,\"cmd\":\"cmt_load_directly\",\"data\":{}}",
+        "{\"type\":\"request\",\"id\":1222,\"cmd\":\"cmt_load_directly\",\"data\":{\"block_id\":\"1\"}}",
+        "{\"type\":\"request\",\"id\":1223,\"cmd\":\"cmt_load_directly\",\"data\":{\"block_id\":1.5}}",
+        "{\"type\":\"request\",\"id\":1224,\"cmd\":\"cmt_load_directly\",\"data\":{\"block_id\":-1}}",
+        "{\"type\":\"request\",\"id\":1225,\"cmd\":\"cmt_tape_step\",\"data\":{}}",
+        "{\"type\":\"request\",\"id\":1226,\"cmd\":\"cmt_tape_step\",\"data\":{\"direction\":\"back\"}}",
+        "{\"type\":\"request\",\"id\":1227,\"cmd\":\"cmt_tape_step\",\"data\":{\"direction\":1}}",
+        "{\"type\":\"request\",\"id\":1228,\"cmd\":\"cmt_export_block\","
+        "\"data\":{\"block\":0,\"block_id\":0,\"path\":\"x.mzf\"}}",
+        "{\"type\":\"request\",\"id\":1229,\"cmd\":\"cmt_export_block\","
+        "\"data\":{\"block_id\":\"0\",\"path\":\"x.mzf\"}}",
+    };
+    for (size_t i = 0; i < G_N_ELEMENTS(bad); i++) {
+        dispatch_stub_reset();
+        TEST_ASSERT_EQUAL_INT_MESSAGE(MCP_DISPATCH_INVALID_PARAMS, _cmt_pulses_dispatch(bad[i], NULL), bad[i]);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_stub_state.call_count, bad[i]);
+    }
+
+    static const struct { const char *line; int cmd; } good[] = {
+        { "{\"type\":\"request\",\"id\":1231,\"cmd\":\"cmt_load_directly\",\"data\":{\"block_id\":2}}",
+          DBGAPI_CMD_CMT_LOAD_DIRECTLY },
+        { "{\"type\":\"request\",\"id\":1232,\"cmd\":\"cmt_tape_step\",\"data\":{\"direction\":\"next\"}}",
+          DBGAPI_CMD_CMT_TAPE_STEP },
+        { "{\"type\":\"request\",\"id\":1233,\"cmd\":\"cmt_tape_step\",\"data\":{\"direction\":\"prev\"}}",
+          DBGAPI_CMD_CMT_TAPE_STEP },
+        { "{\"type\":\"request\",\"id\":1234,\"cmd\":\"cmt_tape_step\",\"data\":{\"direction\":\"start\"}}",
+          DBGAPI_CMD_CMT_TAPE_STEP },
+        { "{\"type\":\"request\",\"id\":1235,\"cmd\":\"cmt_export_block\","
+          "\"data\":{\"block_id\":0,\"path\":\"x.mzf\"}}", DBGAPI_CMD_CMT_EXPORT_BLOCK },
+    };
+    for (size_t i = 0; i < G_N_ELEMENTS(good); i++) {
+        dispatch_stub_reset();
+        char *resp = NULL;
+        TEST_ASSERT_EQUAL_INT_MESSAGE(MCP_DISPATCH_OK, _cmt_pulses_dispatch(good[i].line, &resp), good[i].line);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(good[i].cmd, g_stub_state.last_cmd, good[i].line);
+        free(resp);
+    }
+}
+
+
 void test_media_load_binary_addr_validation(void) {
     /* addr=-1 nebo addr=65536 -> INVALID_PARAMS. addr=0x4000 OK. */
     dispatch_stub_reset();
@@ -8128,10 +8189,15 @@ void test_audio_capture_summary(void) {
     JsonObject *c0 = json_object_get_object_member(json_object_get_object_member(data, "channels"), "ctc0");
     TEST_ASSERT_EQUAL_INT64(45, json_object_get_int_member(c0, "edges"));          /* 0 + 1 + ... + 9 */
     TEST_ASSERT_EQUAL_INT64(9, json_object_get_int_member(c0, "active_frames"));
-    /* nota: hlasitost ve snímku 0 (dělič 0 = nehraje), tón 254 od snímku 1 do konce */
+    /* noty: hlasitost ve snímku 0 při děliči 0 (chová se jako 1024, tedy hraje),
+     * tón 254 od snímku 1 do konce */
     JsonArray *notes = json_object_get_array_member(data, "psg_notes");
-    TEST_ASSERT_EQUAL_UINT(1, json_array_get_length(notes));
+    TEST_ASSERT_EQUAL_UINT(2, json_array_get_length(notes));
     JsonObject *n = json_array_get_object_element(notes, 0);
+    TEST_ASSERT_EQUAL_STRING("psg0_0", json_object_get_string_member(n, "ch"));
+    TEST_ASSERT_EQUAL_INT64(0, json_object_get_int_member(n, "divider"));
+    TEST_ASSERT_EQUAL_INT64(0, json_object_get_int_member(n, "from_frame"));
+    n = json_array_get_object_element(notes, 1);
     TEST_ASSERT_EQUAL_STRING("psg0_0", json_object_get_string_member(n, "ch"));
     TEST_ASSERT_EQUAL_INT64(254, json_object_get_int_member(n, "divider"));
     TEST_ASSERT_EQUAL_INT64(1, json_object_get_int_member(n, "from_frame"));
@@ -9027,11 +9093,14 @@ void test_replay_goto_params(void) {
     g_object_unref(parser);
     free(resp);
 
-    /* frame + frame_ticks = frame * takty snímku + frame_ticks. */
+    /* frame + frame_ticks se předá jako dvojice (čas určí až replay ze
+     * skutečného začátku snímku; snímky může zkrátit bit CKSW). */
     (void)_rc_call("{\"type\":\"request\",\"req_id\":9141,\"cmd\":\"replay_goto\","
                    "\"data\":{\"frame\":3,\"frame_ticks\":100}}", &rc, &parser, &resp);
     TEST_ASSERT_EQUAL_INT(MCP_DISPATCH_OK, rc);
-    TEST_ASSERT_EQUAL_UINT64(3ull * VIDEO_SCREEN_TICKS + 100u, g_stub_replay.last_goto_ticks);
+    TEST_ASSERT_EQUAL_INT(7, g_stub_replay.last_kind);
+    TEST_ASSERT_EQUAL_UINT32(3u, g_stub_replay.last_goto_frame);
+    TEST_ASSERT_EQUAL_UINT32(100u, g_stub_replay.last_goto_frame_ticks);
     TEST_ASSERT_FALSE(g_stub_replay.last_goto_keep);
     TEST_ASSERT_FALSE(g_stub_replay.last_goto_ckpt);
     g_object_unref(parser);
@@ -10037,6 +10106,7 @@ int main(void) {
     RUN_TEST(test_media_run_mzf_errors);
     RUN_TEST(test_cmt_set_property_custom_pulses);
     RUN_TEST(test_cmt_tape_block_speed_pulses);
+    RUN_TEST(test_cmt_load_directly_step_params);
     RUN_TEST(test_media_load_binary_addr_validation);
     RUN_TEST(test_media_insert_each_slot);
     RUN_TEST(test_media_insert_invalid_slot);

@@ -20,6 +20,9 @@
 #include "snapshot/snapshot.h"
 #include "hw-generic/memory/memory.h"
 #include "hw-generic/memory/memext.h"
+#if MZARCH == 800
+#include "mzarch/mz800/memory/mz800_memory.h"
+#endif
 #include "hw-generic/pio8255/pio8255.h"
 #include "hw-generic/fdc/fdc.h"
 #include "hw-generic/qdisk/qdisk.h"
@@ -29,6 +32,7 @@
 #include "hw-generic/cmt/cmt.h"
 #include "hw-generic/cmt/cmtext.h"
 #include "hw-generic/cmt/cmtext_container.h"
+#include "hw-generic/cmt/cmt_tmz.h"
 #if HAVE_JOY
 #include "hw-generic/joy/joy.h"
 #endif
@@ -100,6 +104,9 @@ static void mh_memmap(GChecksum *cs)
 #endif
 #if MZARCH == 800
     mh_u32(cs, (uint32_t)g_mzarch_main.mz800_hwcompat_allow_psg1);
+    /* Rozšíření VRAM jen bez něj, aby otisk stroje s rozšířením zůstal jako
+     * před zavedením volby. */
+    if (!g_mz800_exvram_installed) mh_u32(cs, 0x4558u);
 #endif
     mh_u32(cs, (uint32_t)g_memext.connection);
     mh_u32(cs, (uint32_t)g_memext.type);
@@ -180,20 +187,28 @@ static void mh_media(GChecksum *cs, bool content)
     mh_u32(cs, (uint32_t)g_unicard.readonly);
     mh_str(cs, g_unicard.work_dir);
 
-    /* Páska: identita souboru (obsah volitelně ze souboru hostitele). */
+    /* Páska: původní cesta (při přehrání záznamu vstupů zpět namapovaná
+     * z dočasné kopie, replay_media_cmt_snapshot_path()), Modified a obsah
+     * pásky v paměti (tzx_save(), cmttmz_save_image()) - nikdy soubor na
+     * disku: živý běh a přehrání tak dají stejný otisk i u pásky bez cesty,
+     * s neuloženými změnami nebo uložené nahráváním. Serializace stojí
+     * úměrně velikosti pásky (dřív stejně velké čtení souboru); počítá se
+     * jen s MACHINE_HASH_FLAG_INCLUDE_MEDIA, na vyžádání (MCP), bez cache. */
     st_CMTEXT_CONTAINER *c = CMT_TEST_FILLED ? cmtext_get_container(g_cmt.ext) : NULL;
     const char *tape = c ? cmtext_container_get_filepath(c) : NULL;
     mh_u32(cs, CMT_TEST_FILLED ? 1u : 0u);
-    mh_str(cs, tape);
-    if (content && tape)
+    mh_str(cs, tape ? replay_media_cmt_snapshot_path(tape) : NULL);
+    mh_u32(cs, cmttmz_is_modified() ? 1u : 0u);
+    if (content && c)
     {
-        gchar *data = NULL;
-        gsize len = 0;
-        bool ok = g_file_get_contents(tape, &data, &len, NULL);
+        uint8_t *img = NULL;
+        size_t len = 0;
+        bool ok = (EXIT_SUCCESS == cmttmz_save_image(&img, &len));
         mh_u32(cs, ok ? 1u : 0u);
-        if (ok) mh_content(cs, data, len);
-        g_free(data);
+        if (ok) mh_content(cs, img, len);
+        g_free(img);
     };
+
 
     /* FLASH MemExt: Z80 ji jen čte (zápis jde do WOM), mění ji načtení souboru. */
     mh_str(cs, g_memext.flash_filepath);
@@ -270,6 +285,13 @@ static void mh_cmt(GChecksum *cs)
     mh_u32(cs, CMT_TEST_FILLED ? 1u : 0u);
     mh_u32(cs, (uint32_t)g_cmt.state);
     mh_u32(cs, (uint32_t)g_cmt.paused);
+    /* pauza uživatele a motor za ní jen při zapnuté pauze uživatele (jinak
+     * motor stojí == paused): otisk stavu bez ní je stejný jako dřív */
+    if (g_cmt.user_paused)
+    {
+        mh_u32(cs, 1u);
+        mh_u32(cs, g_cmt.motor_off ? 1u : 0u);
+    };
     mh_u32(cs, (uint32_t)g_cmt.playsts);
     mh_u32(cs, (uint32_t)g_cmt.output);
     mh_u64(cs, g_cmt.start_time);

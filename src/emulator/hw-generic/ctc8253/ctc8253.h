@@ -92,6 +92,7 @@ extern "C"
         CTC_STATE_COUNTDOWN,           /* odecet s cilem */
         CTC_STATE_MODE1_TRIGGER_ERROR, /* MODE1: prisel trigger GATE = 0|1, ale jeste nebyl LOAD_DONE, po naslednem dokonceni LOAD zavolame PRESET32 */
         CTC_STATE_BLIND_COUNT,         /* odecet bez cile */
+        CTC_STATE_STROBE,              /* rezimy 4 a 5: OUT = 0 po dobu jedne periody CLK, dalsi hrana ho vrati do 1 */
 
     } en_CTC_STATE;
 
@@ -111,15 +112,24 @@ extern "C"
          */
         unsigned load_done;
         /**
-         * 1 = hodnota byla dopsána při CLK = HIGH a nejbližší sestupná hrana
-         * CLK ji ještě nenahraje (musí jí předcházet vzestupná hrana).
-         * Platí jen ve stavu CTC_STATE_LOAD_DONE; nastavuje
-         * ctc8253_write_byte(), nuluje ctc8253_clkfall(). Změřeno na HW
-         * MZ-800 (emu-experiments/ctc-mode0-load, CTCLOAD 1-3): hodnota se
-         * nahraje na sestupné hraně CLK, před kterou po zápisu proběhla
-         * vzestupná hrana; okamžik zápisu CW nerozhoduje.
+         * 1 = nejbližší sestupná hrana CLK nedělá nic, jen tento příznak
+         * vynuluje. Nastavuje ho ctc8253_write_byte() po dopsání hodnoty,
+         * která nestihla náběžnou hranu CLK (zápis při CLK = HIGH nebo méně
+         * než asi 250 ns před náběžnou hranou; viz ctc8253_load_skips_edge()),
+         * nuluje ctc8253_clkfall() a zápis řídicího slova. Změřeno na HW
+         * MZ-800 (emu-experiments/ctc-mode0-load a ctc-meas): hodnotu nahraje
+         * sestupná hrana CLK, před kterou po zápisu proběhla náběžná hrana;
+         * okamžik zápisu CW nerozhoduje.
          */
         unsigned load_wait_rise;
+
+        /**
+         * 1 = byl zapsán dolní bajt dvoubajtové hodnoty (RL = LSB+MSB) a čeká
+         * se na horní. Povel Counter Latch v tom stavu nevrací rl_byte na 0
+         * (HW MZ-800: povel zachycení mezi bajty děliče zápis nenaruší).
+         * Invariant: wr_half = 1 jen při rlf = CTC_RLF_LSBMSB a rl_byte = 1.
+         */
+        unsigned wr_half;
 
         unsigned rl_byte; /* pocet bajtu, ktere uz byly do ctc zapsany, nebo precteny - v 8253 je na to skutecne jen jeden registr! */
 
@@ -130,6 +140,7 @@ extern "C"
         /**
          * Aktuální stav čítače tak, jak ho čte CPU (dolních 16 bitů; hodnota
          * 0x10000 / 0x10001 jen hned po nahrání presetu 0 / režimu 3 s N = 1).
+         * Při čítání BCD (bcd = 1) je v kódu BCD (0x10000 = 10 000).
          * V režimu 3 čítá po 2 (liché N: první krok po nahrání -1 při OUT = 1,
          * -3 při OUT = 0), viz ctc8253_mode3_step().
          */
@@ -178,6 +189,35 @@ extern "C"
     extern void ctc8253_gate(unsigned addr, unsigned gate, unsigned event_screen_ticks);
     extern void ctc8253_clkfall(unsigned cs, unsigned event_ticks);
 
+    /**
+     * @brief Zapíše do zvukového kanálu CTC0 úroveň podle stavu čítače a bitu PC0.
+     *
+     * Pro změny, které nepřicházejí hranou OUT0: zápis bitu PC0 (8255),
+     * zastavení bránou a řídicí slovo. Běží-li CTC0 v režimu 3 s děličem 2
+     * (stav ohlášený hranou OUT0, viz audio_ctc0_div2_changed(), a čítač dál
+     * čítá v režimu 3 s GATE0 = 1), jde do kanálu stálá úroveň maskovaná PC0;
+     * jinak OUT0 AND PC0 (audio_ctc0_changed()). Okamžitý stav OUT0 se při
+     * děliči 2 nebere: obdélník 554 kHz je proti klíčování náhodný.
+     *
+     * @param event_ticks Okamžik změny v tikách snímku (gdg_get_insigeop_ticks()).
+     * @pre Vlákno emulátoru; zvukový log existuje (audio_init()).
+     * @post Kanál CTC0 zvukového logu odpovídá stavu čítače a PC0.
+     */
+    extern void ctc8253_ctc0_audio_update(unsigned event_ticks);
+
+    /**
+     * @brief Odvodí stav zvukového kanálu CTC0 ze stavu čítače po načtení snapshotu.
+     *
+     * Stav "režim 3 s děličem 2" ani úroveň kanálu ve snapshotu nejsou.
+     * Dělič se bere ze st_CTC8253.preset_value: liší se od právě odpočítávaného
+     * nejvýš do konce jedné půlperiody, pak ho opraví nejbližší hrana OUT0.
+     * Do zvukového logu nepíše (audio_ctc0_restore()).
+     *
+     * @pre g_ctc8253 a PC0 (g_pio8255) jsou už načtené; volat před
+     *      audio_reset_log().
+     */
+    extern void ctc8253_ctc0_audio_restore(void);
+
 
 #define CTC8253_OUT(cs) g_ctc8253[cs].out
 
@@ -219,12 +259,19 @@ extern "C"
 
 #ifdef MZ800EMU_CFG_CLK1M1_FAST
 #include "gdg/video.h"
+/**
+ * @brief Konec snímku: posune čekající událost CTC0 o délku skončeného snímku.
+ *
+ * Délka je gdg_get_ending_frame_ticks() (na MZ-800 ji zkracuje bit CKSW),
+ * tedy stejná hodnota, o kterou konec snímku posouvá čas GDG. Makro se
+ * rozvíjí v mzarch.c, kde je hlavička GDG vložená.
+ */
 #define ctc8253_on_screen_done_event()                      \
     {                                                       \
         st_CTC8253 *ctc0 = &g_ctc8253[CTC_CS0];             \
         if ((int)ctc0->clk1m1_event.ticks != -1)            \
         {                                                   \
-            ctc0->clk1m1_event.ticks -= VIDEO_SCREEN_TICKS; \
+            ctc0->clk1m1_event.ticks -= gdg_get_ending_frame_ticks(); \
         };                                                  \
     }
 #endif

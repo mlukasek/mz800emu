@@ -223,7 +223,7 @@ void psg_instance_init(st_PSG *psg)
     psg->channel[PSG_CHANNEL_2].type = PSG_CHTYPE_TONE;
 
     psg->channel[PSG_CHANNEL_3].type = PSG_CHTYPE_NOISE;
-    psg->channel[PSG_CHANNEL_3].noise.shiftregister = 1 << 15;
+    psg->channel[PSG_CHANNEL_3].noise.shiftregister = PSG_NOISE_SR_RESET;
 
     for (unsigned i = 0; i < PSG_CHANNELS_COUNT; i++)
     {
@@ -287,14 +287,17 @@ static inline void psg_write_byte_core(st_PSG *psg, uint8_t value, uint64_t tota
         }
         else
         {
-            en_NOISE_DIV_TYPE new_div_type = value & 0x03;
-            en_NOISE_TYPE new_type = (value >> 2) & 1;
-            if ((new_div_type != channel->noise.div_type) || (new_type != channel->noise.type))
-            {
-                audio_log_fill_psg(total_ticks);
-                channel->noise.div_type = new_div_type;
-                channel->noise.type = new_type;
-            };
+            /* Každý zápis do registru šumu (řídicí i datový bajt, i se stejnou
+             * hodnotou) nastaví posuvný registr do výchozího stavu. Změřeno na
+             * MZ-800 (2026-11-14, mz800-knowledge hw-measurement/vysledky.md).
+             * Čítač posunu se zápisem nemění. Výstup = bit 0 registru, po
+             * nastavení tedy 0 (odvozeno z modelu registru, ne změřeno). */
+            audio_log_fill_psg(total_ticks);
+            channel->noise.div_type = value & 0x03;
+            channel->noise.type = (value >> 2) & 1;
+            channel->noise.last_noise_type = channel->noise.type;
+            channel->noise.shiftregister = PSG_NOISE_SR_RESET;
+            channel->output_signal = 0;
         };
     };
 }
@@ -375,68 +378,99 @@ void psg_write_byte(unsigned channel, uint8_t value)
     }
 }
 
+/**
+ * @brief Efektivní dělič tónového kanálu.
+ *
+ * Dělič 000h se na SN76489AN chová jako 1024 (změřeno na MZ-800 2026-11-14:
+ * perioda 32 768 T). Dělič 001h tato funkce neřeší, viz psg_instance_step().
+ *
+ * @param divider Hodnota 10bitového registru děliče (0 až 3FFh).
+ * @return Počet kroků PSG na půlperiodu tónu (1 až 1024).
+ */
+static inline unsigned psg_tone_effective_divider(unsigned divider)
+{
+    return divider ? divider : 0x400;
+}
+
+/**
+ * @brief Provede jeden krok PSG (jeden takt vnitřní děličky CLK / 16).
+ *
+ * Tónový kanál: po `dělič` krocích překlopí výstup (perioda 32 x dělič taktů
+ * CPU). Dělič 000h = 1024. Dělič 001h drží výstup trvale v 1 a čítač kanálu
+ * nemění - zjednodušení: skutečný čip dává obdélník 110,8 kHz (změřeno
+ * 2026-11-14), ve slyšitelném pásmu stálou úroveň 0,49 plné výchylky (změřeno
+ * 2026-11-18). Poloviční úroveň dosazuje až zvukový log (audio.c,
+ * audio_psg_channel_log_value()), aby se do něj nepsala změna každý krok.
+ *
+ * Šumový kanál: čítač posunu vyprší po 32 / 64 / 128 krocích (NF = 0 až 2),
+ * tedy posun jednou za 512 / 1024 / 2048 taktů CPU; při NF = 3 po 2 x dělič
+ * tónu 2 krocích, tedy jednou za celou periodu tónu 2. Posuvný registr má
+ * 15 bitů: bílý šum vrací do bitu 14 bit 0 xor bit 1, periodický šum bit 0
+ * (jedna jednička obíhá, perioda 15 posunů). Výstup je bit 0 registru.
+ * Změřeno na MZ-800 2026-11-14 (mz800-knowledge hw-measurement/vysledky.md).
+ *
+ * Krokují se všechny kanály bez ohledu na hlasitost: čítače kanálu vypnutého
+ * útlumem 15 běží dál, kanál jen nic nehraje (útlum se uplatní až ve zvukovém
+ * logu). U tónových kanálů změřeno na MZ-800 2026-11-18 (tři tóny se stejným
+ * děličem zapnuté po sobě měly v pěti bězích pět různých fází). U šumového
+ * kanálu [neověřeno] - na HW neměřeno, předpokládá se stejné chování.
+ *
+ * @param psg Instance PSG.
+ * @pre Volá se z emulátorového vlákna.
+ * @post Čítače a výstupy kanálů odpovídají stavu o jeden krok později.
+ */
 void psg_instance_step(st_PSG *psg)
 {
     for (unsigned cs = 0; cs < PSG_CHANNELS_COUNT; cs++)
     {
         st_PSG_CHANNEL *channel = &psg->channel[cs];
 
-        if (channel->attn != PSG_OUT_OFF)
+        if (channel->type == PSG_CHTYPE_TONE)
         {
-            if (channel->type == PSG_CHTYPE_TONE)
+            /* tone */
+            st_PSG_TONE *tone = &channel->tone;
+            if (tone->divider == 1)
             {
-                /* tone */
-                st_PSG_TONE *tone = &channel->tone;
-                if (tone->divider < 2)
-                {
-                    channel->output_signal = 1;
-                }
-                else if (0 == channel->timer--)
-                {
-                    channel->timer = tone->divider - 1;
-                    channel->output_signal = (~channel->output_signal) & 0x01;
-                };
+                channel->output_signal = 1;
             }
-            else
+            else if (0 == channel->timer--)
             {
-                /* noise */
-                unsigned bit0, bit3;
-                st_PSG_NOISE *noise = &channel->noise;
-                if ((noise->div_type == 0x03) && (psg->channel[PSG_CHANNEL_2].tone.divider < 2))
+                channel->timer = psg_tone_effective_divider(tone->divider) - 1;
+                channel->output_signal = (~channel->output_signal) & 0x01;
+            };
+        }
+        else
+        {
+            /* noise; běh při vypnuté hlasitosti [neověřeno], viz komentář funkce */
+            unsigned bit0, feedback;
+            st_PSG_NOISE *noise = &channel->noise;
+            unsigned tone2_divider = psg->channel[PSG_CHANNEL_2].tone.divider;
+            if ((noise->div_type == NOISE_DIV_TYPE3) && (tone2_divider == 1))
+            {
+                channel->output_signal = 1;
+            }
+            else if (0 == channel->timer--)
+            {
+                if (noise->div_type == NOISE_DIV_TYPE3)
                 {
-                    channel->output_signal = 1;
+                    channel->timer = 2 * psg_tone_effective_divider(tone2_divider) - 1;
                 }
-                else if (0 == channel->timer--)
+                else
                 {
-                    if (noise->div_type == NOISE_DIV_TYPE3)
-                    {
-                        channel->timer = psg->channel[PSG_CHANNEL_2].tone.divider - 1;
-                    }
-                    else
-                    {
-                        channel->timer = (0x10 << noise->div_type) - 1;
-                    };
-
-                    bit0 = noise->shiftregister & 0x01;
-
-                    if (noise->last_noise_type != noise->type)
-                    {
-                        noise->shiftregister = 1 << 15;
-                        noise->last_noise_type = noise->type;
-                    }
-                    else if (noise->type == NOISE_TYPE_WHITE)
-                    {
-                        bit3 = (noise->shiftregister >> 3) & 0x01;
-                        noise->shiftregister = noise->shiftregister >> 1;
-                        noise->shiftregister |= (bit0 ^ bit3) << 15;
-                    }
-                    else
-                    {
-                        noise->shiftregister = noise->shiftregister >> 1;
-                        noise->shiftregister |= bit0 << 15;
-                    };
-                    channel->output_signal = noise->shiftregister & 0x01;
+                    channel->timer = (0x20 << noise->div_type) - 1;
                 };
+
+                bit0 = noise->shiftregister & 0x01;
+                if (noise->type == NOISE_TYPE_WHITE)
+                {
+                    feedback = bit0 ^ ((noise->shiftregister >> 1) & 0x01);
+                }
+                else
+                {
+                    feedback = bit0;
+                };
+                noise->shiftregister = (uint16_t)((noise->shiftregister >> 1) | (feedback << 14));
+                channel->output_signal = noise->shiftregister & 0x01;
             };
         };
     };

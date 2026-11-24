@@ -23,6 +23,7 @@
 #include "ui-imgui/filechooser/res/CustomFont.h"
 
 #include "main.h"  /* g_sdlapp */
+#include "ui-imgui/cmt/cmt_window.h" /* imgui_cmt_window_os_drop_event() */
 extern "C" void imgui_filechooser_settings_init(void);
 
 #include "mzarch/mzarch_config.h"
@@ -36,6 +37,8 @@ extern "C" void imgui_filechooser_settings_init(void);
 #include "ui-imgui/mcp_activity/mcp_activity_window.h"
 #include "ui-imgui/mcp_activity/action_toast.h"
 #endif
+/* Písma overlay menu se načítají v každé sestavě (i bez MCP a bez debuggeru) */
+#include "ui-imgui/overlay/overlay_style.h" /* overlay_style_load_fonts() */
 
 static ImVec4 default_bg_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -50,6 +53,50 @@ ImFont *myimgui_get_monospace_font(void)
     return s_monospace_font;
 }
 
+/**
+ * @brief Zjistí, zda soubor s fontem existuje a je to běžný soubor.
+ *
+ * ImGui při chybějícím souboru v AddFontFromFileTTF() hlásí uživatelskou
+ * chybu přes IM_ASSERT_USER_ERROR, což v buildu se zapnutými asserty ukončí
+ * proces. Existenci proto ověřujeme předem.
+ *
+ * @param path Absolutní cesta k souboru; smí být NULL (vrací false).
+ * @return true pokud soubor existuje.
+ */
+static bool myimgui_font_file_exists(const char *path)
+{
+    return path && g_file_test(path, G_FILE_TEST_IS_REGULAR);
+}
+
+/**
+ * @brief Naplní atlas fontů ImGui: základní UI font, sloučené glyfy, monospace font a písma overlay menu.
+ *
+ * Fonty se hledají v ui_resources/ relativně k home_dir (adresář binárky,
+ * případně --home-dir). Základní font DroidSans.ttf je první v atlasu, ostatní
+ * (CJK, ikony file chooseru, mzglyphs) se do něj slučují přes MergeMode.
+ * Obsah souboru NotoSansJP-Regular.ttf se drží ve sdílené paměti vizuálního
+ * systému overlay menu (overlay_style_add_shared_font()) do konce procesu;
+ * stejný buffer používají písma overlaye, takže je v paměti jen jednou.
+ *
+ * Chování při chybě: chybějící soubor fontu nikdy neukončí proces.
+ * - Chybí-li DroidSans.ttf, vypíše se chybová hláška s hledanou cestou a radou
+ *   (--home-dir) a jako základní font se použije vestavěný font ImGui. UI je pak
+ *   použitelné, ale bez národních znaků; chybějící ui_resources/ znamená i
+ *   chybějící obrázky.
+ * - Chybí-li volitelný font (NotoSansJP, mzglyphs, Cousine), tiše se přeskočí;
+ *   myimgui_get_monospace_font() pak vrací NULL.
+ * - Písma overlay menu (Inter, JetBrains Mono, ikony Lucide) přidává
+ *   overlay_style_load_fonts() jako samostatná písma za všechna ostatní;
+ *   chybějící soubor se tiše přeskočí a overlay použije základní písmo.
+ *   Ikony Lucide se do základního písma neslučují (jejich rozsah se
+ *   překrývá s mzglyphs).
+ *
+ * @param io ImGui IO aktuálního kontextu; jeho atlas (io.Fonts) se doplní.
+ *
+ * @pre Existuje aktuální ImGui kontext a g_sdlapp->paths je inicializované.
+ * @post io.Fonts obsahuje aspoň jeden font (základní je na indexu 0).
+ * @note Volat jen z hlavního (UI) vlákna.
+ */
 void myimgui_set_fonts(ImGuiIO &io)
 {
     ImFontConfig font_cfg;
@@ -70,24 +117,48 @@ void myimgui_set_fonts(ImGuiIO &io)
      * uvnitř bloků a uvolní se až poté. ImGui si interně cestu nepamatuje. */
     char *droid_path = sdlapp_paths_resolve_home(g_sdlapp->paths,
                                                   "ui_resources/imgui/fonts/DroidSans.ttf");
-    io.Fonts->AddFontFromFileTTF(droid_path, 28.0f, &font_cfg, i18nRanges);
+    if (myimgui_font_file_exists(droid_path))
+    {
+        io.Fonts->AddFontFromFileTTF(droid_path, 28.0f, &font_cfg, i18nRanges);
+    }
+    else
+    {
+        /* Bez základního fontu by následující MergeMode fonty neměly do čeho
+         * slučovat (pád). Použijeme vestavěný font ImGui a řekneme proč. */
+        SDLAPP_ERROR("UI font not found: %s", droid_path);
+        SDLAPP_ERROR("The 'ui_resources' directory was not found in the home directory (%s). "
+                     "By default that is the directory of the executable; use "
+                     "--home-dir <dir> to point to the directory that contains "
+                     "'ui_resources'. Falling back to the built-in font.",
+                     g_sdlapp->paths->home_dir);
+        ImFontConfig fallback_cfg;
+        fallback_cfg.SizePixels = 28.0f;
+        io.Fonts->AddFontDefault(&fallback_cfg);
+    }
     g_free(droid_path);
 
     /* CJK font pro japonštinu — volitelný, pokud soubor existuje */
     {
         char *cjk_font_path = sdlapp_paths_resolve_home(g_sdlapp->paths,
                                                         "ui_resources/imgui/fonts/NotoSansJP-Regular.ttf");
-        FILE *f = fopen(cjk_font_path, "rb");
-        if (f)
+        if (myimgui_font_file_exists(cjk_font_path))
         {
-            fclose(f);
             ImFontConfig cjk_cfg;
             cjk_cfg.MergeMode = true;
             cjk_cfg.OversampleH = 2;
             cjk_cfg.OversampleV = 1;
             cjk_cfg.PixelSnapH = true;
-            io.Fonts->AddFontFromFileTTF(cjk_font_path, 28.0f, &cjk_cfg,
-                                         io.Fonts->GetGlyphRangesJapanese());
+            /* Obsah souboru (16 MB) je v paměti jen jednou: stejný buffer
+             * používají i písma overlay menu (overlay_style_load_fonts()).
+             * Nastavení zdroje, velikost, rozsahy a pořadí v atlasu jsou
+             * stejné jako při načtení ze souboru; nejde-li soubor načíst do
+             * sdílené paměti, načte si ho atlas sám. */
+            if (!overlay_style_add_shared_font(io.Fonts, cjk_font_path, 28.0f, &cjk_cfg,
+                                               io.Fonts->GetGlyphRangesJapanese()))
+            {
+                io.Fonts->AddFontFromFileTTF(cjk_font_path, 28.0f, &cjk_cfg,
+                                             io.Fonts->GetGlyphRangesJapanese());
+            }
         }
         g_free(cjk_font_path);
     }
@@ -107,9 +178,8 @@ void myimgui_set_fonts(ImGuiIO &io)
        *   U+E100-U+E4FF - 4x 256 CG-ROM glyfů z mzglyphs lib:
        *                   E1xx=EU1, E2xx=EU2, E3xx=JP1, E4xx=JP2.
        *
-       * Pokud font soubor chybí, ImGui pokračuje bez glyfů - na
-       * relevantních místech (Memory Browser ASCII column) se zobrazí
-       * replacement glyph. Žádný crash. */
+       * Pokud font soubor chybí, přeskočí se - na relevantních místech
+       * (Memory Browser ASCII column) se zobrazí replacement glyph. */
         static const ImWchar icon_ranges[] = {
             0xE000, 0xE000,    /* UI ikony (kazeta apod.) */
             0xE100, 0xE4FF,    /* mzglyphs CG-ROM glyfy (4 charsety) */
@@ -120,7 +190,10 @@ void myimgui_set_fonts(ImGuiIO &io)
         config.PixelSnapH = true;
         char *mzglyphs_path = sdlapp_paths_resolve_home(g_sdlapp->paths,
                                                          "ui_resources/imgui/symbols/mzglyphs.ttf");
-        io.Fonts->AddFontFromFileTTF(mzglyphs_path, 20.0f, &config, icon_ranges);
+        if (myimgui_font_file_exists(mzglyphs_path))
+        {
+            io.Fonts->AddFontFromFileTTF(mzglyphs_path, 20.0f, &config, icon_ranges);
+        }
         g_free(mzglyphs_path);
     }
 
@@ -134,9 +207,7 @@ void myimgui_set_fonts(ImGuiIO &io)
     {
         char *mono_path = sdlapp_paths_resolve_home(g_sdlapp->paths,
                                                      "ui_resources/imgui/fonts/Cousine-Regular.ttf");
-        FILE *mf = fopen(mono_path, "rb");
-        if (mf) {
-            fclose(mf);
+        if (myimgui_font_file_exists(mono_path)) {
             ImFontConfig mono_cfg;
             mono_cfg.OversampleH = 2;
             mono_cfg.OversampleV = 2;
@@ -157,9 +228,7 @@ void myimgui_set_fonts(ImGuiIO &io)
              * fungovaly v ASCII column při monospace módu. */
             char *mzglyphs2_path = sdlapp_paths_resolve_home(g_sdlapp->paths,
                                                               "ui_resources/imgui/symbols/mzglyphs.ttf");
-            FILE *gf = fopen(mzglyphs2_path, "rb");
-            if (gf) {
-                fclose(gf);
+            if (myimgui_font_file_exists(mzglyphs2_path)) {
                 static const ImWchar mono_icon_ranges[] = {
                     0xE000, 0xE000,
                     0xE100, 0xE4FF,
@@ -174,6 +243,13 @@ void myimgui_set_fonts(ImGuiIO &io)
             g_free(mzglyphs2_path);
         }
         g_free(mono_path);
+    }
+
+    /* Písma overlay menu - samostatná, až za základním (to musí zůstat první). */
+    {
+        char *overlay_font_dir = sdlapp_paths_resolve_home(g_sdlapp->paths, "ui_resources/imgui/fonts");
+        overlay_style_load_fonts(io.Fonts, overlay_font_dir);
+        g_free(overlay_font_dir);
     }
 }
 
@@ -517,6 +593,20 @@ void myimgui_event_cb(SdlAppWindow *win, SDL_Event *event, gpointer user_data)
     ImGui_ImplSDL3_ProcessEvent(event);
     // ImGuiIO &io = ImGui::GetIO();
     // (void)io;
+
+    /* soubor přetažený z OS: poloha i soubory pro okno Virtual CMT;
+     * všechny události SDL (i oken viewportů ImGui) jdou přes hlavní okno sdlapp */
+    switch (event->type)
+    {
+        case SDL_EVENT_DROP_BEGIN:
+        case SDL_EVENT_DROP_POSITION:
+        case SDL_EVENT_DROP_FILE:
+        case SDL_EVENT_DROP_COMPLETE:
+            imgui_cmt_window_os_drop_event(event);
+            break;
+        default:
+            break;
+    };
 
     if (gui->event_cb)
     {

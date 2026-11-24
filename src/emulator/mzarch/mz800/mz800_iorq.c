@@ -372,6 +372,24 @@ void port_write_cb(z80_t *cpu, uint16_t addr, uint8_t value, void *user_data)
         };
         break;
 
+    /* Past zápisových rutin ROM (Direct Save): 03h WHEAD / WDATA, 04h
+     * VERFY. Jen s patchem zápisu v ROM, jinak nepřipojený port. */
+    case 0x03:
+        if (CMTHACK_TEST_SAVE_INSTALLED)
+        {
+            cmthack_save_block();
+            TRACELOG_IORQ_MARK_HANDLED();
+        };
+        break;
+
+    case 0x04:
+        if (CMTHACK_TEST_VERIFY_INSTALLED)
+        {
+            cmthack_verify_block();
+            TRACELOG_IORQ_MARK_HANDLED();
+        };
+        break;
+
     case 0x50:
     case 0x51:
         /* zapisujeme do Unicard */
@@ -422,6 +440,13 @@ void port_write_cb(z80_t *cpu, uint16_t addr, uint8_t value, void *user_data)
     case 0xcd:
     case 0xce:
     case 0xcf:
+        /* Zápis na 0CCh až 0CFh čeká na vyřízení předchozího zápisu do
+         * VRAM; port 0F0h nečeká (měřeno na MZ-800). */
+        mzarch_main_insideop_iorq_gdg_write();
+        gdg_write_byte(addr, value);
+        TRACELOG_IORQ_MARK_HANDLED();
+        break;
+
     case 0xf0:
         /* zapisujeme do GDG: 0xcc - 0xcf, 0xf0 */
         gdg_write_byte(addr, value);
@@ -650,6 +675,7 @@ uint8_t port_read_with_logging_cb(z80_t *cpu, uint16_t addr, void *user_data)
     g_tracelog_iorq_unconnected = 0;
     /* Indikace CPU debug cesty pro filtraci v MREQ/IORQ hooks (sdílí s mhmap). */
     g_dbg_in_cpu_path = 1;
+    uint32_t wait_before = g_mzarch_main.instruction_wait_tstates;
     uint8_t value = port_read_cb(cpu, addr, user_data);
     g_dbg_in_cpu_path = 0;
 
@@ -661,7 +687,8 @@ uint8_t port_read_with_logging_cb(z80_t *cpu, uint16_t addr, void *user_data)
         en_IORQLOG_EVENT_TYPE etype = g_tracelog_iorq_unconnected
             ? IORQLOG_EVENT_IORQ_UNCONNECTED
             : IORQLOG_EVENT_IORQ;
-        iorqlog_record(etype, IORQLOG_DIR_IN, bc, addr, value, 0u);
+        iorqlog_record(etype, IORQLOG_DIR_IN, bc, addr, value,
+                       iorqlog_pulse_pxclk(g_mzarch_main.instruction_wait_tstates - wait_before));
     }
 
     /* I/O Ports panel activity tracking + history - gated default OFF
@@ -677,8 +704,7 @@ uint8_t port_read_with_logging_cb(z80_t *cpu, uint16_t addr, void *user_data)
                             g_mzarch_main.instruction_addr,
                             frame_n,
                             (uint16_t) g_gdg.beam_row,
-                            (uint16_t) VIDEO_GET_SCREEN_COL (
-                                g_gdg.total_elapsed.ticks ),
+                            (uint16_t) gdg_get_beam_col ( ),
                             g_mzarch_main.cpu->total_cycles );
     }
 
@@ -726,6 +752,7 @@ void port_write_with_logging_cb(z80_t *cpu, uint16_t addr, uint8_t value, void *
      * (write nemá natural marker jako regDBUS_latch read). */
     g_tracelog_iorq_unconnected = 0;
     g_dbg_in_cpu_path = 1;
+    uint32_t wait_before = g_mzarch_main.instruction_wait_tstates;
     port_write_cb(cpu, addr, value, user_data);
     g_dbg_in_cpu_path = 0;
 
@@ -735,7 +762,8 @@ void port_write_with_logging_cb(z80_t *cpu, uint16_t addr, uint8_t value, void *
         en_IORQLOG_EVENT_TYPE etype = g_tracelog_iorq_unconnected
             ? IORQLOG_EVENT_IORQ_UNCONNECTED
             : IORQLOG_EVENT_IORQ;
-        iorqlog_record(etype, IORQLOG_DIR_OUT, bc, addr, value, 0u);
+        iorqlog_record(etype, IORQLOG_DIR_OUT, bc, addr, value,
+                       iorqlog_pulse_pxclk(g_mzarch_main.instruction_wait_tstates - wait_before));
     }
 
     /* I/O Ports panel activity tracking + history - gated default OFF. */
@@ -749,8 +777,7 @@ void port_write_with_logging_cb(z80_t *cpu, uint16_t addr, uint8_t value, void *
                             g_mzarch_main.instruction_addr,
                             frame_n,
                             (uint16_t) g_gdg.beam_row,
-                            (uint16_t) VIDEO_GET_SCREEN_COL (
-                                g_gdg.total_elapsed.ticks ),
+                            (uint16_t) gdg_get_beam_col ( ),
                             g_mzarch_main.cpu->total_cycles );
     }
 
