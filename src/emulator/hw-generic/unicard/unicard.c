@@ -2635,7 +2635,7 @@ FRESULT unicard_rename ( const char *old_path, const char *new_path ) {
 
 
 #ifdef _WIN32
-#include <sys/utime.h> /* _utime, _utimbuf */
+#include <windows.h>   /* SetFileTime */
 #else
 #include <utime.h>     /* utime, utimbuf */
 #endif
@@ -2684,12 +2684,24 @@ FRESULT unicard_utime ( const char *path, const uint8_t fat_dt[6] ) {
 
     FRESULT ret = FR_OK;
 #ifdef _WIN32
-    struct _utimbuf utb;
-    utb.actime  = t;
-    utb.modtime = t;
-    char *full_locale = baseui_tools_file_name_locale_from_utf8 ( full );
-    if ( _utime ( full_locale, &utb ) != 0 ) ret = FR_DISK_ERR;
-    g_free ( full_locale );
+    /* Not _utime: the CRT turns the time into the local time with today's daylight saving offset, not that of the
+     * date (a summer date set in the winter came back from g_stat, which reads the UTC time, an hour later; the test
+     * cmdUTIME failed from 25 October). SetFileTime takes the UTC time (FILETIME: 100 ns since 1601). */
+    wchar_t *wfull = (wchar_t*) g_utf8_to_utf16 ( full, -1, NULL, NULL, NULL );
+    HANDLE h = wfull ? CreateFileW ( wfull, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL ) : INVALID_HANDLE_VALUE;
+    g_free ( wfull );
+    if ( INVALID_HANDLE_VALUE == h ) {
+        ret = FR_DISK_ERR;
+    } else {
+        ULARGE_INTEGER u;
+        u.QuadPart = ( (uint64_t) t + 11644473600ULL ) * 10000000ULL;
+        FILETIME ft;
+        ft.dwLowDateTime = u.LowPart;
+        ft.dwHighDateTime = u.HighPart;
+        if ( !SetFileTime ( h, NULL, &ft, &ft ) ) ret = FR_DISK_ERR;
+        CloseHandle ( h );
+    };
 #else
     struct utimbuf utb;
     utb.actime  = t;

@@ -1397,17 +1397,13 @@ void test_unicard_cmdCHMOD_missing(void)
 }
 
 
-/* cmdUTIME - nastavení známé časové značky a verifikace přes cmdSTAT. */
-void test_unicard_cmdUTIME(void)
+/* cmdUTIME 2020-@p month-15 12:30:20 a zpět přes cmdSTAT. */
+static void utime_roundtrip(uint8_t month)
 {
-    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
-
-    create_test_file("utime_target.bin", 5);
-
     uc_send_cmd(cmdRESET);
     uc_send_cmd(cmdUTIME);
     uc_send_data(15);   /* D */
-    uc_send_data(7);    /* M */
+    uc_send_data(month);
     uc_send_data(40);   /* Y-1980 = 2020 */
     uc_send_data(12);   /* H */
     uc_send_data(30);   /* M */
@@ -1418,7 +1414,6 @@ void test_unicard_cmdUTIME(void)
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, sts & UNICARD_STS_ERROR,
                                     "cmdUTIME nesmí ERROR");
 
-    /* Ověření přes cmdSTAT - fdate musí odpovídat 2020-07-15. */
     uc_send_cmd(cmdSTAT);
     uc_send_str("/utime_target.bin");
 
@@ -1427,10 +1422,10 @@ void test_unicard_cmdUTIME(void)
     uint16_t fdate = uc_recv_word_le();
     uint16_t ftime = uc_recv_word_le();
 
-    /* FAT date: (year-1980)<<9 | month<<5 | day = (40<<9)|(7<<5)|15 = 0x50EF */
-    uint16_t expected_date = (40 << 9) | (7 << 5) | 15;
+    /* FAT date: (year-1980)<<9 | month<<5 | day */
+    uint16_t expected_date = (40 << 9) | (month << 5) | 15;
     TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected_date, fdate,
-                                     "fdate musí odpovídat 2020-07-15");
+                                     "fdate musí odpovídat 2020-MM-15");
 
     /* FAT time: hour<<11 | min<<5 | sec/2 = (12<<11)|(30<<5)|10 = 0x63CA */
     uint16_t expected_time = (12 << 11) | (30 << 5) | (20 / 2);
@@ -1440,6 +1435,17 @@ void test_unicard_cmdUTIME(void)
     /* Vyčíst zbytek FILINFO aby se uvolnil DOUTRQ. */
     int remaining = (23 + _MAX_LFN) - 8;
     for (int i = 0; i < remaining; i++) (void)uc_recv_data();
+}
+
+/* cmdUTIME - nastavení známé časové značky a verifikace přes cmdSTAT. Letní i zimní datum: jedno z nich je vždy
+ * v jiném čase než dnešek (na Windows dřív _utime posunulo takové datum o hodinu). */
+void test_unicard_cmdUTIME(void)
+{
+    MZTEST_REQUIRE_LEVEL(MZTEST_LEVEL_UNIT);
+
+    create_test_file("utime_target.bin", 5);
+    utime_roundtrip(7);
+    utime_roundtrip(1);
 }
 
 
