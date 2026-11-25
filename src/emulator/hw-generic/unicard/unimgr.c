@@ -626,6 +626,7 @@ static void do_cmdUTIME ( en_UNIMGR_CMDSTATE cmd_phase ) {
 static void unimgr_ftp_start_put ( const char *src, const char *dst );
 static void unimgr_ftp_cmd ( uint8_t cmd, int what, const char *path, const char *path2 );
 static void unimgr_cloud_error ( int err );
+static void unimgr_ftp_start_stat ( const char *path );
 
 
 /**
@@ -755,6 +756,11 @@ static void do_cmdSTAT ( en_UNIMGR_CMDSTATE cmd_phase ) {
     /* zpracování PARAMOK */
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
 
+    if ( unicard_get_api_rev2 ( ) && unicard_ftp_is_path ( (char*) g_unimgr.buf_byte ) ) {
+        unimgr_ftp_start_stat ( (char*) g_unimgr.buf_byte ); // na pozadí z výpisu adresáře (firmware 0.38)
+        return;
+    };
+
     st_UNICARD_FILINFO finfo;
     g_unimgr.ff_res = unicard_stat ( (char*) g_unimgr.buf_byte, &finfo );
     if ( FR_OK != g_unimgr.ff_res ) return;
@@ -874,6 +880,7 @@ static uint8_t unimgr_rkey_pop ( void ) {
 #define UNIMGR_CLOUD_COPY   3
 #define UNIMGR_CLOUD_PUT    4       // ftp: nahrání (COPY ze SD)
 #define UNIMGR_CLOUD_CMD    5       // ftp: MKDIR, UNLINK, RENAME (s_cloud.cmd)
+#define UNIMGR_CLOUD_STAT   6       // ftp: STAT: výpis nadřazeného adresáře, v něm jméno s_cloud.stat
 #define UNIMGR_CLOUD_WAIT   3
 #define UNIMGR_CLOUD_CHUNK  1024
 #define UNIMGR_CLOUD_CACHE  "/unicard/cloud.tmp"
@@ -886,6 +893,7 @@ static struct {
     uint8_t mode; // režim OPEN
     uint8_t cmd; // UNIMGR_CLOUD_CMD: příkaz (cmdMKDIR, cmdUNLINK, cmdRENAME)
     uint8_t real; // ftp: na skutečném serveru (unicard_ftp.c): výsledek dá jeho vlákno
+    char stat[256]; // UNIMGR_CLOUD_STAT: hledané jméno
     uint16_t len, pos;
     char list[8192];
 } s_cloud;
@@ -1198,6 +1206,30 @@ static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t o
 }
 
 
+/* FILINFO záznamu výpisu name ("jméno[/]" 0Dh "velikost" 0Dh) do p (23 + _MAX_LFN B): datum 0, 8.3 = začátek
+ * jména. */
+static void unimgr_cloud_finfo ( const char *name, uint8_t *p ) {
+    int nl = 0;
+    while ( name[nl] != 0x0d ) nl++;
+    uint32_t size = (uint32_t) strtoul ( &name[nl + 1], NULL, 10 );
+    memset ( p, 0x00, 23 + _MAX_LFN );
+    p[0] = (uint8_t) ( size & 0xff );
+    p[1] = (uint8_t) ( ( size >> 8 ) & 0xff );
+    p[2] = (uint8_t) ( ( size >> 16 ) & 0xff );
+    p[3] = (uint8_t) ( ( size >> 24 ) & 0xff );
+    if ( nl && ( '/' == name[nl - 1] ) ) {
+        p[8] = 0x10; // AM_DIR
+        nl--;
+    } else {
+        p[8] = 0x20; // AM_ARC
+    };
+    memcpy ( &p[9], name, ( nl > 12 ) ? 12 : nl ); // 8.3: začátek jména
+    if ( nl > _MAX_LFN - 1 ) nl = _MAX_LFN - 1;
+    p[22] = (uint8_t) nl;
+    memcpy ( &p[23], name, nl );
+}
+
+
 /* Další záznam výpisu do filebuf; na konci proud končí (stav bit 2). */
 static void unimgr_cloud_dir_next ( void ) {
     const char *name = &s_cloud.list[s_cloud.pos];
@@ -1215,26 +1247,8 @@ static void unimgr_cloud_dir_next ( void ) {
         g_unimgr.filebuf = (uint8_t*) name;
         g_unimgr.filebuf_count = (uint8_t) ( ( e - s_cloud.pos > 255 ) ? 255 : e - s_cloud.pos );
     } else {
-        uint8_t *p = g_unimgr.filebuf_byte;
-        int nl = 0;
-        while ( name[nl] != 0x0d ) nl++;
-        uint32_t size = (uint32_t) strtoul ( &name[nl + 1], NULL, 10 );
-        memset ( p, 0x00, 23 + _MAX_LFN );
-        p[0] = (uint8_t) ( size & 0xff );
-        p[1] = (uint8_t) ( ( size >> 8 ) & 0xff );
-        p[2] = (uint8_t) ( ( size >> 16 ) & 0xff );
-        p[3] = (uint8_t) ( ( size >> 24 ) & 0xff );
-        if ( nl && ( '/' == name[nl - 1] ) ) {
-            p[8] = 0x10; // AM_DIR
-            nl--;
-        } else {
-            p[8] = 0x20; // AM_ARC
-        };
-        memcpy ( &p[9], name, ( nl > 12 ) ? 12 : nl ); // 8.3: začátek jména
-        if ( nl > _MAX_LFN - 1 ) nl = _MAX_LFN - 1;
-        p[22] = (uint8_t) nl;
-        memcpy ( &p[23], name, nl );
-        g_unimgr.filebuf = p;
+        unimgr_cloud_finfo ( name, g_unimgr.filebuf_byte );
+        g_unimgr.filebuf = g_unimgr.filebuf_byte;
         g_unimgr.filebuf_count = 23 + _MAX_LFN;
     };
     s_cloud.pos = e;
@@ -1297,6 +1311,75 @@ static void unimgr_ftp_cmd ( uint8_t cmd, int what, const char *path, const char
 }
 
 
+/*
+ * STAT s cestou ftp: (firmware 0.38): na pozadí jako výpis nadřazeného adresáře (vždy čerstvý: dotaz na přepsání,
+ * velikost po nahrání), v něm se hledá jméno (napřed přesně, pak bez ohledu na velikost písmen). "ftp:/" je
+ * adresář hned. Nenajde-li se: chyba FatFs FR_NO_FILE jako f_stat; výpis, který se nevejde: chyba 7, kód 4.
+ */
+static void unimgr_ftp_start_stat ( const char *path ) {
+    const char *s = path + 4;
+    while ( *s == '/' ) s++;
+    size_t len = strlen ( s );
+    while ( len && ( '/' == s[len - 1] ) ) len--;
+    if ( !len ) {
+        uint8_t *p = g_unimgr.buf_byte;
+        memset ( p, 0x00, 23 + _MAX_LFN );
+        p[8] = 0x10; // AM_DIR
+        g_unimgr.buf = p;
+        g_unimgr.buf_count = 23 + _MAX_LFN;
+        g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+        g_unimgr.ff_res = FR_OK;
+        g_unimgr.sts_err = UNIMGR_STS_OK;
+        return;
+    };
+    size_t k = len;
+    while ( k && ( '/' != s[k - 1] ) ) k--; // s[k..len) = jméno, s[0..k-1) = rodič na serveru
+    size_t nl = len - k;
+    if ( nl >= sizeof ( s_cloud.stat ) ) nl = sizeof ( s_cloud.stat ) - 1;
+    memcpy ( s_cloud.stat, &s[k], nl );
+    s_cloud.stat[nl] = 0;
+    char *parent = g_strdup_printf ( "ftp:/%.*s", (int) ( k ? k - 1 : 0 ), s );
+    unimgr_cloud_start_dir ( parent );
+    g_free ( parent );
+    if ( UNIMGR_CLOUD_DIR == s_cloud.op ) s_cloud.op = UNIMGR_CLOUD_STAT;
+}
+
+
+/* Výsledek STAT na ftp:: jméno s_cloud.stat ve výpisu s_cloud.list. */
+static void unimgr_ftp_stat_done ( void ) {
+    const char *found = NULL;
+    for ( int pass = 0; ( pass < 2 ) && !found; pass++ ) {
+        uint16_t e = 0;
+        while ( e < s_cloud.len ) {
+            const char *name = &s_cloud.list[e];
+            int nl = 0, n = 0;
+            while ( ( e < s_cloud.len ) && ( n < 2 ) ) if ( 0x0d == s_cloud.list[e++] ) n++;
+            if ( n < 2 ) break;
+            while ( name[nl] != 0x0d ) nl++;
+            if ( nl && ( '/' == name[nl - 1] ) ) nl--;
+            if ( ( (size_t) nl == strlen ( s_cloud.stat ) ) &&
+                 ( pass ? !g_ascii_strncasecmp ( name, s_cloud.stat, nl ) : !strncmp ( name, s_cloud.stat, nl ) ) ) {
+                found = name;
+                break;
+            };
+        };
+    };
+    g_unimgr.cmd = cmdSTAT;
+    g_unimgr.err_code = UC_ERR_NONE;
+    if ( !found ) {
+        g_unimgr.ff_res = FR_NO_FILE;
+        g_unimgr.sts_err = UNIMGR_STS_ERROR;
+        return;
+    };
+    unimgr_cloud_finfo ( found, g_unimgr.buf_byte );
+    g_unimgr.buf = g_unimgr.buf_byte;
+    g_unimgr.buf_count = 23 + _MAX_LFN;
+    g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DOUTRQ;
+    g_unimgr.ff_res = FR_OK;
+    g_unimgr.sts_err = UNIMGR_STS_OK;
+}
+
+
 /* Při čtení stavu: čekání na výpis, další kus stahování, výsledek. */
 static void unimgr_cloud_poll ( void ) {
     int real_done = 0;
@@ -1306,7 +1389,7 @@ static void unimgr_cloud_poll ( void ) {
         if ( r < 0 ) return;
         s_cloud.real = 0;
         s_cloud.wait = 0;
-        if ( UNIMGR_CLOUD_DIR == s_cloud.op ) s_cloud.len = (uint16_t) len;
+        if ( ( UNIMGR_CLOUD_DIR == s_cloud.op ) || ( UNIMGR_CLOUD_STAT == s_cloud.op ) ) s_cloud.len = (uint16_t) len;
         if ( UNICARD_FTP_ERR_FS == r ) { /* soubor na SD: chyba FatFs jako firmware */
             s_cloud.op = 0;
             g_unimgr.err_code = UC_ERR_NONE;
@@ -1339,6 +1422,10 @@ static void unimgr_cloud_poll ( void ) {
     if ( UNIMGR_CLOUD_DIR == op ) {
         s_cloud.pos = 0;
         unimgr_cloud_dir_next ( );
+        return;
+    };
+    if ( UNIMGR_CLOUD_STAT == op ) {
+        unimgr_ftp_stat_done ( );
         return;
     };
     g_unimgr.err_code = UC_ERR_NONE;
