@@ -32,6 +32,8 @@
 #include <glib.h>
 #include <glib/gstdio.h>
 
+#include "unicard_ftp.h"
+
 // Lokalizace
 #include "i18n.h"
 
@@ -3397,9 +3399,14 @@ const char* unicard_ftp_root ( void ) {
 }
 
 
+int unicard_ftp_folder ( void ) {
+    return unicard_ftp_root ( ) != NULL;
+}
+
+
 int unicard_ftp_online ( void ) {
     const char *r = unicard_ftp_root ( );
-    if ( !r ) return 0;
+    if ( !r ) return unicard_ftpc_has_server ( ); /* servery z ftp.cfg na SD jako karta */
     GDir *d = g_dir_open ( r, 0, NULL );
     if ( !d ) return 0;
     int any = 0;

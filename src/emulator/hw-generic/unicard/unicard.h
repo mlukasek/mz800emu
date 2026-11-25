@@ -937,8 +937,14 @@ extern "C" {
      */
     extern const char* unicard_ftp_root ( void );
 
-    /** @brief Je svazek ftp: (složka s aspoň jedním serverem)? Na kartě: ftp.cfg má server a je síť. */
+    /**
+     * @brief Je svazek ftp:? Se složkou MZ800EMU_UNICARD_FTP (testy) aspoň jeden server v ní, jinak jako karta
+     *        server v /unicard/ftp.cfg emulované SD (skutečné servery FTP, unicard_ftp.c).
+     */
     extern int unicard_ftp_online ( void );
+
+    /** @brief Bere se místo serverů složka MZ800EMU_UNICARD_FTP? (jinak skutečné servery z ftp.cfg) */
+    extern int unicard_ftp_folder ( void );
 
     /** @brief Začíná cesta "ftp:"? */
     extern int unicard_ftp_is_path ( const char *path );

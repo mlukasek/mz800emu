@@ -248,6 +248,7 @@
 #include "unicard_ini.h"
 #include "unimgr.h"
 #include "unicard_tcp.h"
+#include "unicard_ftp.h"
 #include "unicard_net.h"
 #include "unicard_opencpu.h"
 #include "mzarch/mzarch.h"
@@ -623,7 +624,7 @@ static void do_cmdUTIME ( en_UNIMGR_CMDSTATE cmd_phase ) {
 
 /* svazek ftp: (klient FTP firmwaru 0.38) na pozadí, níže u cloud: */
 static void unimgr_ftp_start_put ( const char *src, const char *dst );
-static void unimgr_ftp_cmd ( uint8_t cmd, FRESULT res );
+static void unimgr_ftp_cmd ( uint8_t cmd, int what, const char *path, const char *path2 );
 static void unimgr_cloud_error ( int err );
 
 
@@ -640,7 +641,7 @@ static void do_cmdMKDIR ( en_UNIMGR_CMDSTATE cmd_phase ) {
     };
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     if ( unicard_get_api_rev2 ( ) && unicard_ftp_is_path ( (char*) g_unimgr.buf_byte ) ) {
-        unimgr_ftp_cmd ( cmdMKDIR, unicard_ftp_mkdir ( (char*) g_unimgr.buf_byte ) );
+        unimgr_ftp_cmd ( cmdMKDIR, UNICARD_FTP_MKD, (char*) g_unimgr.buf_byte, NULL );
         return;
     };
     g_unimgr.ff_res = unicard_mkdir ( (char*) g_unimgr.buf_byte );
@@ -662,7 +663,7 @@ static void do_cmdUNLINK ( en_UNIMGR_CMDSTATE cmd_phase ) {
     };
     g_unimgr.cmd_phase = UNIMGR_CMDSTATE_DONE;
     if ( unicard_get_api_rev2 ( ) && unicard_ftp_is_path ( (char*) g_unimgr.buf_byte ) ) {
-        unimgr_ftp_cmd ( cmdUNLINK, unicard_ftp_unlink ( (char*) g_unimgr.buf_byte ) );
+        unimgr_ftp_cmd ( cmdUNLINK, UNICARD_FTP_DELE, (char*) g_unimgr.buf_byte, NULL );
         return;
     };
     g_unimgr.ff_res = unicard_unlink ( (char*) g_unimgr.buf_byte );
@@ -693,7 +694,7 @@ static void do_cmdRENAME ( en_UNIMGR_CMDSTATE cmd_phase ) {
             unimgr_cloud_error ( CLOUD_ERR_INVALID );
             return;
         };
-        unimgr_ftp_cmd ( cmdRENAME, unicard_ftp_rename ( old_path, new_path ) );
+        unimgr_ftp_cmd ( cmdRENAME, UNICARD_FTP_REN, old_path, new_path );
         return;
     };
     g_unimgr.ff_res = unicard_rename ( old_path, new_path );
@@ -884,6 +885,7 @@ static struct {
     uint8_t dir; // proud záznamů výpisu (stav bit 2)
     uint8_t mode; // režim OPEN
     uint8_t cmd; // UNIMGR_CLOUD_CMD: příkaz (cmdMKDIR, cmdUNLINK, cmdRENAME)
+    uint8_t real; // ftp: na skutečném serveru (unicard_ftp.c): výsledek dá jeho vlákno
     uint16_t len, pos;
     char list[8192];
 } s_cloud;
@@ -1130,6 +1132,24 @@ static void unimgr_cloud_start_dir ( const char *path ) {
             unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
             return;
         };
+        if ( !unicard_ftp_folder ( ) ) {
+            const char *p = path + 4;
+            while ( *p == '/' ) p++;
+            if ( !*p ) { /* "ftp:/": servery z ftp.cfg */
+                int k = unicard_ftpc_servers ( s_cloud.list, sizeof ( s_cloud.list ) );
+                s_cloud.len = ( k < 0 ) ? 0 : (uint16_t) k;
+                unimgr_cloud_wait ( UNIMGR_CLOUD_DIR, ( k < 0 ) ? CLOUD_ERR_TOO_LARGE : 0, UNIMGR_CLOUD_WAIT );
+                return;
+            };
+            int r = unicard_ftpc_list ( path );
+            if ( r ) {
+                unimgr_cloud_error ( r );
+                return;
+            };
+            s_cloud.real = 1;
+            unimgr_cloud_wait ( UNIMGR_CLOUD_DIR, 0, 0 );
+            return;
+        };
         int n = unicard_ftp_list ( path, s_cloud.list, sizeof ( s_cloud.list ) );
         s_cloud.len = ( n < 0 ) ? 0 : (uint16_t) n;
         unimgr_cloud_wait ( UNIMGR_CLOUD_DIR, ( -1 == n ) ? CLOUD_ERR_TOO_LARGE : ( -2 == n ) ? CLOUD_ERR_FAILED : 0,
@@ -1150,6 +1170,21 @@ static void unimgr_cloud_start_get ( const char *src, const char *dst, uint8_t o
     int ftp = unicard_ftp_is_path ( src );
     if ( ftp ? !unicard_ftp_online ( ) : !unimgr_cloud_online ( ) ) {
         unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
+        return;
+    };
+    if ( ftp && !unicard_ftp_folder ( ) ) { /* skutečný server: stáhne vlákno rovnou do souboru */
+        if ( unicard_test_readonly ( ) ) {
+            g_unimgr.ff_res = FR_WRITE_PROTECTED;
+            return;
+        };
+        char *host = unicard_jail_resolve ( dst );
+        int e = host ? unicard_ftpc_get ( src, host ) : CLOUD_ERR_FAILED;
+        if ( e ) {
+            unimgr_cloud_error ( e );
+            return;
+        };
+        s_cloud.real = 1;
+        unimgr_cloud_wait ( op, 0, 0 );
         return;
     };
     FRESULT r = ftp ? unicard_ftp_copy_start ( src, dst ) : unicard_cloud_copy_start ( src, dst );
@@ -1213,6 +1248,22 @@ static void unimgr_ftp_start_put ( const char *src, const char *dst ) {
         unimgr_cloud_error ( CLOUD_ERR_NOT_CONNECTED );
         return;
     };
+    if ( !unicard_ftp_folder ( ) ) { /* skutečný server: nahraje vlákno */
+        char *host = unicard_jail_resolve ( src );
+        if ( !host || !g_file_test ( host, G_FILE_TEST_IS_REGULAR ) ) {
+            g_free ( host );
+            g_unimgr.ff_res = FR_NO_FILE;
+            return;
+        };
+        int e = unicard_ftpc_put ( host, dst );
+        if ( e ) {
+            unimgr_cloud_error ( e );
+            return;
+        };
+        s_cloud.real = 1;
+        unimgr_cloud_wait ( UNIMGR_CLOUD_PUT, 0, 0 );
+        return;
+    };
     FRESULT r = unicard_ftp_put_start ( src, dst );
     if ( FR_OK != r ) {
         if ( FR_NO_FILE == r ) {            /* zdroj na kartě není: chyba FatFs jako firmware (f_open) */
@@ -1228,17 +1279,47 @@ static void unimgr_ftp_start_put ( const char *src, const char *dst ) {
 
 /* ftp: MKDIR, UNLINK, RENAME: na kartě běží na pozadí (přihlášení, příkaz), tady hotové hned, výsledek po
  * UNIMGR_CLOUD_WAIT čteních stavu; chyba jako 5xx serveru (7, FAILED). */
-static void unimgr_ftp_cmd ( uint8_t cmd, FRESULT res ) {
+static void unimgr_ftp_cmd ( uint8_t cmd, int what, const char *path, const char *path2 ) {
     s_cloud.cmd = cmd;
+    if ( !unicard_ftp_folder ( ) ) { /* skutečný server: přihlášení a příkaz ve vlákně */
+        int e = unicard_ftpc_cmd ( what, path, path2 );
+        if ( e ) {
+            unimgr_cloud_error ( e );
+            return;
+        };
+        s_cloud.real = 1;
+        unimgr_cloud_wait ( UNIMGR_CLOUD_CMD, 0, 0 );
+        return;
+    };
+    FRESULT res = ( UNICARD_FTP_MKD == what ) ? unicard_ftp_mkdir ( path ) :
+        ( UNICARD_FTP_REN == what ) ? unicard_ftp_rename ( path, path2 ) : unicard_ftp_unlink ( path );
     unimgr_cloud_wait ( UNIMGR_CLOUD_CMD, ( FR_OK == res ) ? 0 : CLOUD_ERR_FAILED, UNIMGR_CLOUD_WAIT );
 }
 
 
 /* Při čtení stavu: čekání na výpis, další kus stahování, výsledek. */
 static void unimgr_cloud_poll ( void ) {
-    if ( s_cloud.wait && --s_cloud.wait ) return;
-    if ( !s_cloud.err && ( ( UNIMGR_CLOUD_OPEN == s_cloud.op ) || ( UNIMGR_CLOUD_COPY == s_cloud.op ) ||
-                           ( UNIMGR_CLOUD_PUT == s_cloud.op ) ) ) {
+    int real_done = 0;
+    if ( s_cloud.real ) { /* ftp: na skutečném serveru: hotové vlákno */
+        int len = 0;
+        int r = unicard_ftpc_result ( s_cloud.list, sizeof ( s_cloud.list ), &len );
+        if ( r < 0 ) return;
+        s_cloud.real = 0;
+        s_cloud.wait = 0;
+        if ( UNIMGR_CLOUD_DIR == s_cloud.op ) s_cloud.len = (uint16_t) len;
+        if ( UNICARD_FTP_ERR_FS == r ) { /* soubor na SD: chyba FatFs jako firmware */
+            s_cloud.op = 0;
+            g_unimgr.err_code = UC_ERR_NONE;
+            g_unimgr.ff_res = FR_DISK_ERR;
+            g_unimgr.sts_err = UNIMGR_STS_ERROR;
+            return;
+        };
+        s_cloud.err = r;
+        real_done = 1;
+    };
+    if ( !real_done && s_cloud.wait && --s_cloud.wait ) return;
+    if ( !real_done && !s_cloud.err && ( ( UNIMGR_CLOUD_OPEN == s_cloud.op ) || ( UNIMGR_CLOUD_COPY == s_cloud.op ) ||
+                                         ( UNIMGR_CLOUD_PUT == s_cloud.op ) ) ) {
         FRESULT res;
         if ( unicard_copy_step ( UNIMGR_CLOUD_CHUNK, &res ) ) return;
         if ( FR_OK != res ) {
@@ -1281,6 +1362,10 @@ static void unimgr_cloud_poll ( void ) {
 
 
 static void unimgr_cloud_cancel ( void ) {
+    if ( s_cloud.real ) {
+        unicard_ftpc_cancel ( );
+        s_cloud.real = 0;
+    };
     if ( ( UNIMGR_CLOUD_OPEN == s_cloud.op ) || ( UNIMGR_CLOUD_COPY == s_cloud.op ) ||
          ( UNIMGR_CLOUD_PUT == s_cloud.op ) ) unicard_copy_cancel ( );
     s_cloud.op = 0;
@@ -2581,7 +2666,8 @@ static uint8_t unimgr_read_STATUS ( void ) {
                 /* fw 0.26: vždy 0. UC API rev 2: chybový kód podle MZPico. */
                 ret = unicard_get_api_rev2 ( ) ? unimgr_err_code ( ) : 0x00;
             } else if ( s_cloud.op ) {
-                ret = unicard_copy_active ( ) ? unicard_copy_percent ( ) : 0; // průběh stahování z cloudu
+                ret = s_cloud.real ? unicard_ftpc_percent ( ) : // průběh stahování z cloudu, ftp:
+                    ( unicard_copy_active ( ) ? unicard_copy_percent ( ) : 0 );
             } else if ( unicard_copy_active ( ) ) {
                 ret = unicard_copy_percent ( ); // průběh COPY na pozadí
             } else if ( ( UNIMGR_CMDSTATE_DOUTRQ == g_unimgr.cmd_phase ) || ( UNIMGR_CMDSTATE_PARAMRQ == g_unimgr.cmd_phase ) ) {
