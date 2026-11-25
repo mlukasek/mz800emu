@@ -613,8 +613,10 @@ if(Python3_FOUND)
     message(STATUS "  tests/mcp: registered mcp_gdg_hw_fixes "
                    "(Python ${Python3_VERSION})")
 
-    # MZ-800, režim MZ-700: zápis do VRAM na D000h přes registr WF jako do
-    # roviny I (SINGLE, XOR, OR, RESET). Pipe, bez TCP. Bez binárky 77.
+    # MZ-800, režim MZ-700: zápis do VRAM (znaky, atributy, CG-RAM) přes
+    # registr WF a čtení přes RF, i do rozšířené VRAM. Měřicí program
+    # tests/data/mz700_vram_wf/wf700_meas1.mzf, hodnoty změřené na skutečném
+    # MZ-800. Pipe, bez TCP. Bez binárky 77.
     add_test(
         NAME    mcp_mz700_vram_wf
         COMMAND ${Python3_EXECUTABLE}
@@ -1074,6 +1076,26 @@ if(Python3_FOUND)
         SKIP_RETURN_CODE 77
     )
     message(STATUS "  tests/mcp: registered mcp_mz1500_vram_wait "
+                   "(Python ${Python3_VERSION})")
+
+    # -----------------------------------------------------------
+    # MZ-700: čekací takt při čtení z monitorové ROM (pipe)
+    # -----------------------------------------------------------
+    # Podle měření na skutečném MZ-700 PAL (2026-11-24): čtecí cyklus z ROM
+    # 0000h až 0FFFh trvá o 1 T déle, když je ROM připojená; zápis, RAM na
+    # jejím místě (OUT 0E0h) a ostatní oblasti nečekají. MZ-1500 nečeká.
+    add_test(
+        NAME    mcp_mz700_rom_wait
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_mz700_rom_wait.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(mcp_mz700_rom_wait PROPERTIES
+        LABELS  "e2e;mcp;pipe"
+        TIMEOUT 120
+        SKIP_RETURN_CODE 77
+    )
+    message(STATUS "  tests/mcp: registered mcp_mz700_rom_wait "
                    "(Python ${Python3_VERSION})")
 
     # -----------------------------------------------------------
