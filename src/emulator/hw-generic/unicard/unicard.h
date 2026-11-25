@@ -929,6 +929,35 @@ extern "C" {
     extern int unicard_cloud_is_path ( const char *path );
 
     /**
+     * @brief Svazek ftp: (klient FTP firmwaru mk3b 0.38, UC-UniMgr docs/api.md 4.10): emulace bere místo serverů
+     *        složku hostitele z MZ800EMU_UNICARD_FTP, každá její podsložka je jeden server ("ftp:/jmeno/cesta" =
+     *        <složka>/jmeno/cesta).
+     *
+     * @return složka, nebo NULL
+     */
+    extern const char* unicard_ftp_root ( void );
+
+    /** @brief Je svazek ftp: (složka s aspoň jedním serverem)? Na kartě: ftp.cfg má server a je síť. */
+    extern int unicard_ftp_online ( void );
+
+    /** @brief Začíná cesta "ftp:"? */
+    extern int unicard_ftp_is_path ( const char *path );
+
+    /** @brief Výpis jako text FILELIST; "ftp:/" jsou servery (podsložky). -1 = nevejde se, -2 = není. */
+    extern int unicard_ftp_list ( const char *path, char *out, size_t max );
+
+    /** @brief Stažení z ftp: do dst_path (cesta na kartě) na pozadí jako unicard_copy_start. */
+    extern FRESULT unicard_ftp_copy_start ( const char *ftp_path, const char *dst_path );
+
+    /** @brief Nahrání src_path (cesta na kartě) na ftp: na pozadí jako unicard_copy_start. */
+    extern FRESULT unicard_ftp_put_start ( const char *src_path, const char *ftp_path );
+
+    /** @brief MKD, DELE (adresář RMD), RNFR + RNTO na ftp: (jen na stejném serveru). FR_OK, jinak chyba. */
+    extern FRESULT unicard_ftp_mkdir ( const char *path );
+    extern FRESULT unicard_ftp_unlink ( const char *path );
+    extern FRESULT unicard_ftp_rename ( const char *from, const char *to );
+
+    /**
      * @brief Výpis složky cloudu jako text FILELIST ("jméno[/]" 0Dh "velikost"
      *        0Dh), složky napřed, abecedně. Neexistující složka = prázdný výpis
      *        (jako api.mzpico.com).

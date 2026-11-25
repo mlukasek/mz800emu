@@ -3330,9 +3330,8 @@ static int unicard_cloud_cmp ( gconstpointer a, gconstpointer b ) {
 }
 
 
-int unicard_cloud_list ( const char *path, char *out, size_t max ) {
-    char *host = unicard_cloud_resolve ( path );
-    if ( !host ) return 0;
+/* Výpis složky hostitele jako text FILELIST (složky napřed, abecedně; host se uvolní). -1 = nevejde se. */
+static int unicard_list_host ( char *host, char *out, size_t max ) {
     GDir *d = g_dir_open ( host, 0, NULL );
     if ( !d ) {
         g_free ( host );
@@ -3370,6 +3369,13 @@ int unicard_cloud_list ( const char *path, char *out, size_t max ) {
 }
 
 
+int unicard_cloud_list ( const char *path, char *out, size_t max ) {
+    char *host = unicard_cloud_resolve ( path );
+    if ( !host ) return 0;
+    return unicard_list_host ( host, out, max );
+}
+
+
 FRESULT unicard_cloud_copy_start ( const char *cloud_path, const char *dst_path ) {
     unicard_copy_cancel ( );
     if ( unicard_test_readonly ( ) ) {
@@ -3380,6 +3386,147 @@ FRESULT unicard_cloud_copy_start ( const char *cloud_path, const char *dst_path 
     char *src = unicard_cloud_resolve ( cloud_path );
     if ( !src ) return FR_NO_FILE;
     return unicard_copy_begin ( src, unicard_jail_resolve ( dst_path ) );
+}
+
+
+/* --- Svazek ftp: (klient FTP firmwaru mk3b 0.38), složka hostitele místo serverů --- */
+
+const char* unicard_ftp_root ( void ) {
+    const char *r = g_getenv ( "MZ800EMU_UNICARD_FTP" );
+    return ( r && r[0] ) ? r : NULL;
+}
+
+
+int unicard_ftp_online ( void ) {
+    const char *r = unicard_ftp_root ( );
+    if ( !r ) return 0;
+    GDir *d = g_dir_open ( r, 0, NULL );
+    if ( !d ) return 0;
+    int any = 0;
+    const char *n;
+    while ( !any && ( n = g_dir_read_name ( d ) ) ) {
+        char *f = g_build_filename ( r, n, NULL );
+        any = g_file_test ( f, G_FILE_TEST_IS_DIR );
+        g_free ( f );
+    };
+    g_dir_close ( d );
+    return any;
+}
+
+
+int unicard_ftp_is_path ( const char *path ) {
+    return ( 0 == g_ascii_strncasecmp ( path, "ftp:", 4 ) );
+}
+
+
+/* Hostitelská cesta k "ftp:/server/a" (g_free); NULL = bez složky, ".." v cestě, nebo bez serveru (need_server). */
+static char* unicard_ftp_resolve ( const char *path, int need_server ) {
+    const char *root = unicard_ftp_root ( );
+    if ( !root ) return NULL;
+    if ( unicard_ftp_is_path ( path ) ) path += 4;
+    while ( *path == '/' ) path++;
+    if ( need_server && !*path ) return NULL;
+    gchar **parts = g_strsplit ( path, "/", -1 );
+    int bad = 0;
+    for ( int i = 0; parts[i]; i++ ) if ( 0 == strcmp ( parts[i], ".." ) ) bad = 1;
+    g_strfreev ( parts );
+    if ( bad ) return NULL;
+    return g_build_filename ( root, path, NULL );
+}
+
+
+/* Jméno serveru z "ftp:/server/..." do out (nejvýš max - 1 znaků). */
+static void unicard_ftp_server ( const char *path, char *out, size_t max ) {
+    size_t n = 0;
+    path += 4;
+    while ( *path == '/' ) path++;
+    while ( *path && ( *path != '/' ) && ( n < max - 1 ) ) out[n++] = *path++;
+    out[n] = 0x00;
+}
+
+
+int unicard_ftp_list ( const char *path, char *out, size_t max ) {
+    char *host = unicard_ftp_resolve ( path, 0 );
+    if ( !host || !g_file_test ( host, G_FILE_TEST_IS_DIR ) ) {
+        g_free ( host );
+        return -2;                          /* jako 550 serveru */
+    };
+    const char *p = path + 4;
+    while ( *p == '/' ) p++;
+    if ( *p ) return unicard_list_host ( host, out, max );
+    /* "ftp:/": servery (podsložky) bez velikosti, jako firmware z ftp.cfg */
+    int len = unicard_list_host ( host, out, max );
+    if ( len <= 0 ) return len;
+    int w = 0, r = 0;
+    while ( r < len ) {
+        int s = r;
+        while ( ( r < len ) && ( out[r] != 0x0d ) ) r++;
+        int is_dir = ( r > s ) && ( out[r - 1] == '/' );
+        int name_end = r;
+        r++;
+        while ( ( r < len ) && ( out[r] != 0x0d ) ) r++;
+        r++;
+        if ( !is_dir ) continue;
+        memmove ( &out[w], &out[s], (size_t) ( name_end - s ) );
+        w += name_end - s;
+        out[w++] = 0x0d;
+        out[w++] = '0';
+        out[w++] = 0x0d;
+    };
+    return w;
+}
+
+
+FRESULT unicard_ftp_copy_start ( const char *ftp_path, const char *dst_path ) {
+    unicard_copy_cancel ( );
+    if ( unicard_test_readonly ( ) ) {
+        unicard_warn_readonly_blocked ( );
+        return FR_WRITE_PROTECTED;
+    };
+    if ( FR_OK != unicard_path_name_check ( dst_path ) ) return FR_INVALID_NAME;
+    char *src = unicard_ftp_resolve ( ftp_path, 1 );
+    if ( !src ) return FR_NO_FILE;
+    return unicard_copy_begin ( src, unicard_jail_resolve ( dst_path ) );
+}
+
+
+FRESULT unicard_ftp_put_start ( const char *src_path, const char *ftp_path ) {
+    unicard_copy_cancel ( );
+    char *dst = unicard_ftp_resolve ( ftp_path, 1 );
+    if ( !dst ) return FR_NO_PATH;
+    return unicard_copy_begin ( unicard_jail_resolve ( src_path ), dst );
+}
+
+
+FRESULT unicard_ftp_mkdir ( const char *path ) {
+    char *h = unicard_ftp_resolve ( path, 1 );
+    FRESULT r = ( h && ( 0 == g_mkdir ( h, 0777 ) ) ) ? FR_OK : FR_DENIED;
+    g_free ( h );
+    return r;
+}
+
+
+FRESULT unicard_ftp_unlink ( const char *path ) {
+    char *h = unicard_ftp_resolve ( path, 1 );
+    FRESULT r = FR_NO_FILE;
+    if ( h && g_file_test ( h, G_FILE_TEST_IS_DIR ) ) r = ( 0 == g_rmdir ( h ) ) ? FR_OK : FR_DENIED;
+    else if ( h && g_file_test ( h, G_FILE_TEST_EXISTS ) ) r = ( 0 == g_remove ( h ) ) ? FR_OK : FR_DENIED;
+    g_free ( h );
+    return r;
+}
+
+
+FRESULT unicard_ftp_rename ( const char *from, const char *to ) {
+    char s1[32], s2[32];
+    if ( !unicard_ftp_is_path ( to ) ) return FR_INVALID_NAME;
+    unicard_ftp_server ( from, s1, sizeof ( s1 ) );
+    unicard_ftp_server ( to, s2, sizeof ( s2 ) );
+    if ( g_ascii_strcasecmp ( s1, s2 ) ) return FR_INVALID_NAME;     /* jen na stejném serveru */
+    char *a = unicard_ftp_resolve ( from, 1 ), *b = unicard_ftp_resolve ( to, 1 );
+    FRESULT r = ( a && b && g_file_test ( a, G_FILE_TEST_EXISTS ) && ( 0 == g_rename ( a, b ) ) ) ? FR_OK : FR_DENIED;
+    g_free ( a );
+    g_free ( b );
+    return r;
 }
 
 

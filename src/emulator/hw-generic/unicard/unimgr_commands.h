@@ -468,6 +468,7 @@ extern "C" {
 #define UC_INFO_RESTART     0x0040  // RESTART 9Bh
 #define UC_INFO_CLOUD       0x0080  // svazek cloud: (FILELIST, READDIR, OPEN, COPY), LISTVOL 90h
 #define UC_INFO_RKEY        0x0100  // vzdálené klávesy RKEY 9Ch
+#define UC_INFO_FTP         0x0200  // svazek ftp: (klient FTP firmwaru mk3b 0.38, /unicard/ftp.cfg)
 
 #define UC_INFO_BOARD_MK3B  0x01    // INFO [1]: Unicard mk3b
 
